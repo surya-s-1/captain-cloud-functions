@@ -8,20 +8,32 @@ import mimetypes
 import pandas as pd
 import functions_framework
 from urllib.parse import urlparse
-from google.cloud import storage, documentai_v1 as documentai
-
-storage_client = storage.Client()
-documentai_client = documentai.DocumentProcessorServiceClient()
+from google.cloud import storage, firestore, documentai_v1 as documentai, pubsub_v1
 
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
 PROCESSOR_ID = os.getenv('DOC_AI_PROCESSOR_ID')
 LOCATION = os.getenv('DOC_AI_LOCATION')
+FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
+OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
+OUTPUT_TOPIC = os.getenv('OUTPUT_TOPIC')
+
+storage_client = storage.Client()
+pubsub_client = pubsub_v1.PublisherClient()
+firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
+documentai_client = documentai.DocumentProcessorServiceClient()
 PROCESSOR_NAME = documentai_client.processor_path(
     GOOGLE_CLOUD_PROJECT, LOCATION, PROCESSOR_ID
 )
-OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
 
 # --- Helper Functions ---
+
+
+def _update_firestore_status(project_id, status):
+    '''Updates the status of a project in Firestore.'''
+    doc_ref = firestore_client.collection('projects').document(project_id)
+    update_data = {'status': status}
+    doc_ref.set(update_data, merge=True)
+    print(f'Updated status for project {project_id} to {status}.')
 
 
 def _download_blob_to_memory(bucket_name, source_blob_name):
@@ -138,7 +150,7 @@ def _extract_from_document_ai(file_url):
 
 
 @functions_framework.cloud_event
-def extract_text_from_files(event, context = None):
+def extract_text_from_files(event, context=None):
     '''
     Cloud Function to extract text from files specified in a Pub/Sub message.
     '''
@@ -152,11 +164,20 @@ def extract_text_from_files(event, context = None):
             raise ValueError('Pub/Sub message \'data\' field is missing.')
 
         # Decode and parse the Pub/Sub message
-        message_payload_str = base64.b64decode(event.data.get('message', {}).get('data', None)).decode('utf-8')
+        message_payload_str = base64.b64decode(
+            event.data.get('message', {}).get('data', None)
+        ).decode('utf-8')
         message_payload = ast.literal_eval(message_payload_str)
 
         project_id = message_payload.get('project_id', None)
+        version = message_payload.get('version', None)
         file_urls = message_payload.get('files', [])
+
+        if not project_id or not version or not file_urls:
+            print('REQUIRED DETAILS NOT PROVIDED:', project_id, version, file_urls)
+            return
+
+        _update_firestore_status(project_id, 'START_TEXT_EXTRACT')
 
         extracted_results = []
 
@@ -169,10 +190,13 @@ def extract_text_from_files(event, context = None):
 
                 if file_extension in ['csv', 'xlsx', 'xls']:
                     result_object.update(_extract_from_structured(file_url))
+
                 elif file_extension in ['docx']:
                     result_object.update(_extract_from_word(file_url))
+
                 elif file_extension in ['pdf', 'jpg', 'jpeg', 'png']:
                     result_object.update(_extract_from_document_ai(file_url))
+
                 else:
                     print(f'Skipping unsupported file type: {file_url}')
                     continue
@@ -182,7 +206,7 @@ def extract_text_from_files(event, context = None):
                 print(f'Error processing file {file_url}: {e}')
 
         # Write the results to a JSON file in GCS
-        output_blob_path = f'extracted-text/{project_id}.json'
+        output_blob_path = f'extracted-text/{project_id}/v{version}.json'
         output_bucket = storage_client.bucket(OUTPUT_BUCKET)
         output_blob = output_bucket.blob(output_blob_path)
 
@@ -190,7 +214,24 @@ def extract_text_from_files(event, context = None):
             data=json.dumps(extracted_results, indent=2),
             content_type='application/json',
         )
-        print(f'Successfully wrote results to gs://{OUTPUT_BUCKET}/{output_blob_path}')
+
+        _update_firestore_status(project_id, 'COMPLETE_TEXT_EXTRACT')
+
+        extracted_text_url = f'gs://{OUTPUT_BUCKET}/{output_blob_path}'
+        print(f'Successfully wrote results to {extracted_text_url}')
+
+        final_topic_name = f'projects/{GOOGLE_CLOUD_PROJECT}/topics/{OUTPUT_TOPIC}'
+        final_message_data = {
+            'project_id': project_id,
+            'version': version,
+            'extracted_text_url': extracted_text_url,
+        }
+
+        future = pubsub_client.publish(
+            final_topic_name, json.dumps(final_message_data).encode('utf-8')
+        )
+
+        print(f'Published final message to {final_topic_name}: {future.result()}')
 
     except Exception as e:
         print(f'An error occurred: {e}')
