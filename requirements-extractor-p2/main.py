@@ -106,7 +106,7 @@ def process_requirements(event, context = None):
             2.  For any merged requirements, combine the `sources` values among each other and `regulations` values among each other to form arrays into a single, comprehensive list without duplicates.
             3.  The final `requirement_id` should be a unique sequential number starting from 1.
             4.  Maintain the original `requirement_type` if the requirement is kept. If it's a new, combined requirement, use the type that best describes the merged content (e.g., if a `functional` and `regulation` requirement are merged, the new type should be `regulation`). If both are the same, keep that type.
-            5. DO NOT INDIVIDUAL STRINGS PROVIDED IN REGULATIONS.
+            5. Absolutely do not ignore the requiremnts of any type if they are not being combined with another requirement.
             
             Return the final, deduplicated list in a single JSON array, following this exact schema:
             [
@@ -261,7 +261,5 @@ def query_discovery_engine(query_text):
     response = discovery_client.search(request=request)
 
     processed_response = process_results(response)
-
-    print('processed_response', processed_response)
 
     return processed_response
