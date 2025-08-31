@@ -1,0 +1,364 @@
+[
+    {
+        "file_name": "Medical Software Requirements.docx",
+        "file_url": "gs://genai-sage/project-uploads/abcde/v1/Medical Software Requirements.docx",
+        "file_type": "unstructured",
+        "extracted_by": "python-docx",
+        "extracted_text": [
+            {
+                "text": "Medical Software Requirements",
+                "location": {
+                    "paragraph_number": 0
+                }
+            },
+            {
+                "text": "1. Introduction",
+                "location": {
+                    "paragraph_number": 1
+                }
+            },
+            {
+                "text": "This document outlines the functional and non-functional requirements for the medical software application. The software is designed to streamline patient management, scheduling, and electronic health records (EHR) for clinics and hospitals. It will be a secure, web-based platform accessible to authorized medical staff.",
+                "location": {
+                    "paragraph_number": 2
+                }
+            },
+            {
+                "text": "2. Functional Requirements",
+                "location": {
+                    "paragraph_number": 4
+                }
+            },
+            {
+                "text": "User Management: The system must allow for the creation, editing, and deactivation of user accounts with specific roles (e.g., Doctor, Nurse, Administrator). Each role will have defined access permissions.",
+                "location": {
+                    "paragraph_number": 5
+                }
+            },
+            {
+                "text": "Patient Records: The software must allow for the creation and management of electronic patient records, including demographics, medical history, diagnoses, allergies, and medication history. All information must be time-stamped with the user who made the entry.",
+                "location": {
+                    "paragraph_number": 6
+                }
+            },
+            {
+                "text": "Appointment Scheduling: The system must include a calendar-based interface for scheduling, rescheduling, and canceling patient appointments. It must send automated reminders to patients via email or SMS.",
+                "location": {
+                    "paragraph_number": 7
+                }
+            },
+            {
+                "text": "Prescription Management: The software must enable doctors to generate electronic prescriptions, check for potential drug-drug interactions, and securely send prescriptions to pharmacies.",
+                "location": {
+                    "paragraph_number": 8
+                }
+            },
+            {
+                "text": "Reporting: The system must be able to generate reports on patient demographics, appointment trends, and billing summaries to assist in clinic administration.",
+                "location": {
+                    "paragraph_number": 9
+                }
+            },
+            {
+                "text": "3. Non-functional Requirements",
+                "location": {
+                    "paragraph_number": 11
+                }
+            },
+            {
+                "text": "Security: The system must comply with HIPAA regulations. All patient data must be encrypted both at rest and in transit. The system must include a robust access control mechanism and a detailed audit trail of all data access and modifications.",
+                "location": {
+                    "paragraph_number": 12
+                }
+            },
+            {
+                "text": "Performance: The system must load patient records and reports within three seconds under typical usage conditions.",
+                "location": {
+                    "paragraph_number": 13
+                }
+            },
+            {
+                "text": "Usability: The user interface must be intuitive and easy to navigate for medical professionals with minimal training.",
+                "location": {
+                    "paragraph_number": 14
+                }
+            },
+            {
+                "text": "Reliability: The system must have a guaranteed uptime of 99.9%.",
+                "location": {
+                    "paragraph_number": 15
+                }
+            }
+        ]
+    },
+    {
+        "file_name": "Medical Software Requirements.pdf",
+        "file_url": "gs://genai-sage/project-uploads/abcde/v1/Medical Software Requirements.pdf",
+        "file_type": "semistructured",
+        "extracted_by": "document_ai",
+        "extracted_text": [
+            {
+                "text": "Medical Software Requirements\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "1. Introduction\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "This document outlines the functional and non-functional requirements for the medical\nsoftware application. The software is designed to streamline patient management,\nscheduling, and electronic health records (EHR) for clinics and hospitals. It will be a\nsecure, web-based platform accessible to authorized medical staff.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "2. Functional Requirements\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "User Management: The system must allow for the creation, editing, and\ndeactivation of user accounts with specific roles (e.g., Doctor, Nurse,\nAdministrator). Each role will have defined access permissions.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "Patient Records: The software must allow for the creation and management of\nelectronic patient records, including demographics, medical history, diagnoses,\nallergies, and medication history. All information must be time-stamped with the\nuser who made the entry.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "Appointment Scheduling: The system must include a calendar-based interface\nfor scheduling, rescheduling, and canceling patient appointments. It must send\nautomated reminders to patients via email or SMS.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "Prescription Management: The software must enable doctors to generate\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "electronic prescriptions, check for potential drug-drug interactions, and securely\nsend prescriptions to pharmacies.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "Reporting: The system must be able to generate reports on patient\ndemographics, appointment trends, and billing summaries to assist in clinic\nadministration.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "3. Non-functional Requirements\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "Security: The system must comply with HIPAA regulations. All patient data must\nbe encrypted both at rest and in transit. The system must include a robust\naccess control mechanism and a detailed audit trail of all data access and\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "modifications.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "Performance: The system must load patient records and reports within three\nseconds under typical usage conditions.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "Usability: The user interface must be intuitive and easy to navigate for medical\nprofessionals with minimal training.\n",
+                "location": {
+                    "page": 1
+                }
+            },
+            {
+                "text": "\u2022\n",
+                "location": {
+                    "page": 2
+                }
+            },
+            {
+                "text": "Reliability: The system must have a guaranteed uptime of 99.9%.\n",
+                "location": {
+                    "page": 2
+                }
+            }
+        ]
+    },
+    {
+        "file_name": "Requirements.xlsx",
+        "file_url": "gs://genai-sage/project-uploads/abcde/v1/Requirements.xlsx",
+        "file_type": "structured",
+        "extracted_by": "pandas",
+        "extracted_text": [
+            {
+                "text": "Requirement Description    Allow doctors and nurses to securely log in.\nPriority                                                           High",
+                "location": {
+                    "row": 0,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Create and manage patient electronic health re...\nPriority                                                                High",
+                "location": {
+                    "row": 1,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Search for patients by name, ID, or birth date.\nPriority                                                            Medium",
+                "location": {
+                    "row": 2,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Book, reschedule, and cancel patient appointme...\nPriority                                                                High",
+                "location": {
+                    "row": 3,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Send automated appointment reminders to patients.\nPriority                                                              Medium",
+                "location": {
+                    "row": 4,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Generate electronic prescriptions.\nPriority                                                 High",
+                "location": {
+                    "row": 5,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Check for drug interactions when prescribing m...\nPriority                                                                High",
+                "location": {
+                    "row": 6,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Generate daily and weekly reports on appointme...\nPriority                                                              Medium",
+                "location": {
+                    "row": 7,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Ensure all patient data is encrypted.\nPriority                                                Critical",
+                "location": {
+                    "row": 8,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Comply with all relevant healthcare privacy re...\nPriority                                                            Critical",
+                "location": {
+                    "row": 9,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            },
+            {
+                "text": "Requirement Description    Be accessible from web browsers on various dev...\nPriority                                                                High",
+                "location": {
+                    "row": 10,
+                    "column_headers": [
+                        "Requirement Description",
+                        "Priority"
+                    ]
+                }
+            }
+        ]
+    }
+]

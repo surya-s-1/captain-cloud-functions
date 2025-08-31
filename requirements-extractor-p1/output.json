@@ -1,0 +1,347 @@
+[
+    {
+        "requirement": "All information must be time-stamped with the user who made the entry.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Patient Records: The software must allow for the creation and management of electronic patient records, including demographics, medical history, diagnoses, allergies, and medication history. All information must be time-stamped with the user who made the entry.",
+                "location": "#paragraph_number:6"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Patient Records: The software must allow for the creation and management of\nelectronic patient records, including demographics, medical history, diagnoses,\nallergies, and medication history. All information must be time-stamped with the\nuser who made the entry.\n",
+                "location": "#page:1"
+            }
+        ]
+    },
+    {
+        "requirement": "All patient data must be encrypted both at rest and in transit.",
+        "requirement_type": "security",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must be encrypted both at rest and in transit. The system must include a robust access control mechanism and a detailed audit trail of all data access and modifications.",
+                "location": "#paragraph_number:12"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must\nbe encrypted both at rest and in transit. The system must include a robust\naccess control mechanism and a detailed audit trail of all data access and\nmodifications.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Ensure all patient data is encrypted.\nPriority                                                Critical",
+                "location": "#row:8"
+            }
+        ]
+    },
+    {
+        "requirement": "Allow doctors and nurses to securely log in.",
+        "requirement_type": "security",
+        "sources": [
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Allow doctors and nurses to securely log in.\nPriority                                                           High",
+                "location": "#row:0"
+            }
+        ]
+    },
+    {
+        "requirement": "Be accessible from web browsers on various devices.",
+        "requirement_type": "non-functional",
+        "sources": [
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Be accessible from web browsers on various dev...\nPriority                                                                High",
+                "location": "#row:10"
+            }
+        ]
+    },
+    {
+        "requirement": "Book, reschedule, and cancel patient appointments.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Appointment Scheduling: The system must include a calendar-based interface for scheduling, rescheduling, and canceling patient appointments. It must send automated reminders to patients via email or SMS.",
+                "location": "#paragraph_number:7"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Appointment Scheduling: The system must include a calendar-based interface\nfor scheduling, rescheduling, and canceling patient appointments. It must send\nautomated reminders to patients via email or SMS.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Book, reschedule, and cancel patient appointme...\nPriority                                                                High",
+                "location": "#row:3"
+            }
+        ]
+    },
+    {
+        "requirement": "Comply with all relevant healthcare privacy regulations (e.g., HIPAA).",
+        "requirement_type": "security",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must be encrypted both at rest and in transit. The system must include a robust access control mechanism and a detailed audit trail of all data access and modifications.",
+                "location": "#paragraph_number:12"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must\nbe encrypted both at rest and in transit. The system must include a robust\naccess control mechanism and a detailed audit trail of all data access and\nmodifications.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Comply with all relevant healthcare privacy re...\nPriority                                                            Critical",
+                "location": "#row:9"
+            }
+        ]
+    },
+    {
+        "requirement": "Search for patients by name, ID, or birth date.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Search for patients by name, ID, or birth date.\nPriority                                                            Medium",
+                "location": "#row:2"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must be able to generate reports on patient demographics, appointment trends, and billing summaries.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Reporting: The system must be able to generate reports on patient demographics, appointment trends, and billing summaries to assist in clinic administration.",
+                "location": "#paragraph_number:9"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Reporting: The system must be able to generate reports on patient\ndemographics, appointment trends, and billing summaries to assist in clinic\nadministration.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Generate daily and weekly reports on appointme...\nPriority                                                              Medium",
+                "location": "#row:7"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must have a guaranteed uptime of 99.9%.",
+        "requirement_type": "non-functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Reliability: The system must have a guaranteed uptime of 99.9%.",
+                "location": "#paragraph_number:15"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Reliability: The system must have a guaranteed uptime of 99.9%.\n",
+                "location": "#page:2"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must include a calendar-based interface for scheduling, rescheduling, and canceling patient appointments.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Appointment Scheduling: The system must include a calendar-based interface for scheduling, rescheduling, and canceling patient appointments. It must send automated reminders to patients via email or SMS.",
+                "location": "#paragraph_number:7"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Appointment Scheduling: The system must include a calendar-based interface\nfor scheduling, rescheduling, and canceling patient appointments. It must send\nautomated reminders to patients via email or SMS.\n",
+                "location": "#page:1"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must include a detailed audit trail of all data access and modifications.",
+        "requirement_type": "security",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must be encrypted both at rest and in transit. The system must include a robust access control mechanism and a detailed audit trail of all data access and modifications.",
+                "location": "#paragraph_number:12"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must\nbe encrypted both at rest and in transit. The system must include a robust\naccess control mechanism and a detailed audit trail of all data access and\nmodifications.\n",
+                "location": "#page:1"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must include a robust access control mechanism.",
+        "requirement_type": "security",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must be encrypted both at rest and in transit. The system must include a robust access control mechanism and a detailed audit trail of all data access and modifications.",
+                "location": "#paragraph_number:12"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Security: The system must comply with HIPAA regulations. All patient data must\nbe encrypted both at rest and in transit. The system must include a robust\naccess control mechanism and a detailed audit trail of all data access and\nmodifications.\n",
+                "location": "#page:1"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must load patient records and reports within three seconds under typical usage conditions.",
+        "requirement_type": "performance",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Performance: The system must load patient records and reports within three seconds under typical usage conditions.",
+                "location": "#paragraph_number:13"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Performance: The system must load patient records and reports within three\nseconds under typical usage conditions.\n",
+                "location": "#page:1"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must send automated reminders to patients via email or SMS.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Appointment Scheduling: The system must include a calendar-based interface for scheduling, rescheduling, and canceling patient appointments. It must send automated reminders to patients via email or SMS.",
+                "location": "#paragraph_number:7"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Appointment Scheduling: The system must include a calendar-based interface\nfor scheduling, rescheduling, and canceling patient appointments. It must send\nautomated reminders to patients via email or SMS.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Send automated appointment reminders to patients.\nPriority                                                              Medium",
+                "location": "#row:4"
+            }
+        ]
+    },
+    {
+        "requirement": "The system must allow for the creation, editing, and deactivation of user accounts with specific roles. Each role will have defined access permissions.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "User Management: The system must allow for the creation, editing, and deactivation of user accounts with specific roles (e.g., Doctor, Nurse, Administrator). Each role will have defined access permissions.",
+                "location": "#paragraph_number:5"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "User Management: The system must allow for the creation, editing, and\ndeactivation of user accounts with specific roles (e.g., Doctor, Nurse,\nAdministrator). Each role will have defined access permissions.\n",
+                "location": "#page:1"
+            }
+        ]
+    },
+    {
+        "requirement": "The software must allow for the creation and management of electronic patient records, including demographics, medical history, diagnoses, allergies, and medication history.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Patient Records: The software must allow for the creation and management of electronic patient records, including demographics, medical history, diagnoses, allergies, and medication history. All information must be time-stamped with the user who made the entry.",
+                "location": "#paragraph_number:6"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Patient Records: The software must allow for the creation and management of\nelectronic patient records, including demographics, medical history, diagnoses,\nallergies, and medication history. All information must be time-stamped with the\nuser who made the entry.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Create and manage patient electronic health re...\nPriority                                                                High",
+                "location": "#row:1"
+            }
+        ]
+    },
+    {
+        "requirement": "The software must enable doctors to check for potential drug-drug interactions.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Prescription Management: The software must enable doctors to generate electronic prescriptions, check for potential drug-drug interactions, and securely send prescriptions to pharmacies.",
+                "location": "#paragraph_number:8"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Prescription Management: The software must enable doctors to generate\nelectronic prescriptions, check for potential drug-drug interactions, and securely\nsend prescriptions to pharmacies.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Check for drug interactions when prescribing m...\nPriority                                                                High",
+                "location": "#row:6"
+            }
+        ]
+    },
+    {
+        "requirement": "The software must enable doctors to generate electronic prescriptions.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Prescription Management: The software must enable doctors to generate electronic prescriptions, check for potential drug-drug interactions, and securely send prescriptions to pharmacies.",
+                "location": "#paragraph_number:8"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Prescription Management: The software must enable doctors to generate\nelectronic prescriptions, check for potential drug-drug interactions, and securely\nsend prescriptions to pharmacies.\n",
+                "location": "#page:1"
+            },
+            {
+                "file_name": "Requirements.xlsx",
+                "text_used": "Requirement Description    Generate electronic prescriptions.\nPriority                                                 High",
+                "location": "#row:5"
+            }
+        ]
+    },
+    {
+        "requirement": "The software must enable doctors to securely send prescriptions to pharmacies.",
+        "requirement_type": "functional",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Prescription Management: The software must enable doctors to generate electronic prescriptions, check for potential drug-drug interactions, and securely send prescriptions to pharmacies.",
+                "location": "#paragraph_number:8"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Prescription Management: The software must enable doctors to generate\nelectronic prescriptions, check for potential drug-drug interactions, and securely\nsend prescriptions to pharmacies.\n",
+                "location": "#page:1"
+            }
+        ]
+    },
+    {
+        "requirement": "The user interface must be intuitive and easy to navigate for medical professionals with minimal training.",
+        "requirement_type": "usability",
+        "sources": [
+            {
+                "file_name": "Medical Software Requirements.docx",
+                "text_used": "Usability: The user interface must be intuitive and easy to navigate for medical professionals with minimal training.",
+                "location": "#paragraph_number:14"
+            },
+            {
+                "file_name": "Medical Software Requirements.pdf",
+                "text_used": "Usability: The user interface must be intuitive and easy to navigate for medical\nprofessionals with minimal training.\n",
+                "location": "#page:1"
+            }
+        ]
+    }
+]
