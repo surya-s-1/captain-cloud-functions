@@ -311,8 +311,6 @@ def process_requirements_phase_2(request):
                 400,
             )
 
-        # Start the heavy lifting in a new thread and return immediately
-
         print('Starting asynchronous processing in a new thread.')
 
         worker_thread = threading.Thread(
