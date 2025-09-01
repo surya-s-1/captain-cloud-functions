@@ -7,6 +7,8 @@ from urllib.parse import urlparse
 from google import genai
 from google.cloud import storage, firestore, discoveryengine_v1
 from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
+import google.auth.transport.requests as auth_requests
+import google.oauth2.id_token as oauth2_id_token
 
 # Environment variables
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
@@ -234,13 +236,19 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             'requirements_p2_url': output_url,
         }
 
+        request = auth_requests.Request()
+        id_token = oauth2_id_token.fetch_id_token(request, TESTCASE_CREATION_URL)
+
         # Using a timeout to prevent hanging on network issues
         response = requests.post(
-            TESTCASE_CREATION_URL, json=final_message_data, timeout=30
+            TESTCASE_CREATION_URL,
+            headers={'Authorization': f'Bearer {id_token}'},
+            json=final_message_data,
+            timeout=30,
         )
         response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
         print(
-            f'Successfully sent POST request to {TESTCASE_CREATION_URL}. Response: {response.text}'
+            f'Successfully sent POST request to {TESTCASE_CREATION_URL}. Response status: {response.status_code}'
         )
 
     except Exception as e:
