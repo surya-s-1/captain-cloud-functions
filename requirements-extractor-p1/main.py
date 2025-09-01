@@ -18,7 +18,7 @@ firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
 genai_client = genai.Client(http_options=HttpOptions(api_version='v1'))
 
 
-def update_firestore_status(project_id, status):
+def _update_firestore_status(project_id, status):
     '''Updates the status of a project in Firestore.'''
     doc_ref = firestore_client.collection('projects').document(project_id)
     update_data = {'status': status}
@@ -30,18 +30,13 @@ def update_firestore_status(project_id, status):
 def _process_req_p1_async(project_id, version, extracted_text_url):
     '''Performs the core logic of text analysis and makes the final POST request asynchronously.'''
     try:
-        update_firestore_status(project_id, 'START_REQ_EXTRACT_P1')
+        _update_firestore_status(project_id, 'START_REQ_EXTRACT_P1')
 
-        try:
-            bucket_name, file_path = extracted_text_url[5:].split('/', 1)
-            bucket = storage_client.bucket(bucket_name)
-            blob = bucket.blob(file_path)
-            extracted_content = blob.download_as_bytes()
-            extracted_data_list = json.loads(extracted_content.decode('utf-8'))
-        except Exception as e:
-            print(f'Error fetching or parsing extracted text file: {e}. Exiting.')
-            update_firestore_status(project_id, 'ERROR_REQ_EXTRACT')
-            return
+        bucket_name, file_path = extracted_text_url[5:].split('/', 1)
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(file_path)
+        extracted_content = blob.download_as_bytes()
+        extracted_data_list = json.loads(extracted_content.decode('utf-8'))
 
         requirement_types = [
             'functional',
@@ -93,20 +88,15 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
             },
         }
 
-        try:
-            response = genai_client.models.generate_content(
-                model='gemini-2.5-flash',
-                contents=[Content(parts=[Part(text=prompt)], role='user')],
-                config=GenerateContentConfig(
-                    response_mime_type='application/json',
-                    response_json_schema=response_schema,
-                ),
-            )
-            requirements_json = json.loads(response.text)
-        except Exception as e:
-            print(f'Error calling Gemini API or parsing response: {e}. Exiting.')
-            update_firestore_status(project_id, 'ERROR_REQ_EXTRACT')
-            return
+        response = genai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[Content(parts=[Part(text=prompt)], role='user')],
+            config=GenerateContentConfig(
+                response_mime_type='application/json',
+                response_json_schema=response_schema,
+            ),
+        )
+        requirements_json = json.loads(response.text)
 
         output_path = f'requirements/{project_id}/v{version}/requirements-p1.json'
         output_blob = storage_client.bucket(OUTPUT_BUCKET).blob(output_path)
@@ -116,7 +106,7 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
         requirements_p1_url = f'gs://{OUTPUT_BUCKET}/{output_path}'
         print(f'Successfully wrote requirements to {requirements_p1_url}')
 
-        update_firestore_status(project_id, 'COMPLETE_REQ_EXTRACT_P2')
+        _update_firestore_status(project_id, 'COMPLETE_REQ_EXTRACT_P1')
 
         # Make the final HTTP POST call to the next endpoint
         final_message_data = {
@@ -136,7 +126,8 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
 
     except Exception as e:
         print(f'An error occurred during asynchronous processing: {e}')
-        update_firestore_status(project_id, 'FAILED_REQ_EXTRACT')
+
+        _update_firestore_status(project_id, 'ERR_REQ_EXTRACT_P1')
 
 
 # --- Main Cloud Function (HTTP Trigger) ---
