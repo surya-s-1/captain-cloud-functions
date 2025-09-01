@@ -30,12 +30,18 @@ firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
 serving_config = f'projects/{PROJECT_ID}/locations/{LOCATION}/collections/default_collection/dataStores/{DATA_STORE_ID}/servingConfigs/default_serving_config'
 
 
-def _update_firestore_status(project_id, status):
-    '''Updates the status of a project in Firestore.'''
-    doc_ref = firestore_client.collection('projects').document(project_id)
+def _update_firestore_status(project_id, version, status):
+    '''Updates the status of a specific project version in Firestore.'''
+    doc_ref = (
+        firestore_client
+        .collection('projects')
+        .document(project_id)
+        .collection(f'versions')
+        .document(version)
+    )
     update_data = {'status': status}
     doc_ref.set(update_data, merge=True)
-    print(f'Updated status for project {project_id} to {status}.')
+    print(f'Updated status for project {project_id} version {version} to {status}.')
 
 
 # --- Discovery Engine Helper Function ---
@@ -96,7 +102,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
     try:
         print('Starting asynchronous processing...')
 
-        _update_firestore_status(project_id, 'START_REQ_EXTRACT_P2')
+        _update_firestore_status(project_id, version, 'START_REQ_EXTRACT_P2')
 
         parsed_url = urlparse(requirements_p1_url)
         bucket_name = parsed_url.netloc
@@ -253,8 +259,11 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         print(f'Manual verification needed: {manual_verification_needed}.')
 
         requirements_collection_ref = (
-            firestore_client.collection('projects')
+            firestore_client
+            .collection('projects')
             .document(project_id)
+            .collection('versions')
+            .document(version)
             .collection('requirements')
         )
         batch = firestore_client.batch()
@@ -272,7 +281,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             f'Successfully stored {len(final_requirements)} requirements in Firestore.'
         )
 
-        _update_firestore_status(project_id, 'COMPLETE_REQ_EXTRACT_P2')
+        _update_firestore_status(project_id, version, 'COMPLETE_REQ_EXTRACT_P2')
 
         if manual_verification_needed:
             print(
@@ -280,34 +289,33 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             )
             return
 
-        final_message_data = {
-            'project_id': project_id,
-            'version': version,
-            'requirements_p2_url': output_url,
-        }
-
-        request = auth_requests.Request()
-        id_token = oauth2_id_token.fetch_id_token(request, TESTCASE_CREATION_URL)
-
-        response = requests.post(
-            TESTCASE_CREATION_URL,
-            headers={'Authorization': f'Bearer {id_token}'},
-            json=final_message_data,
-            timeout=30,
-        )
-
-        print(f'POST request sent to {TESTCASE_CREATION_URL}.')
-
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
-        print(
-            f'Successfully sent POST request to {TESTCASE_CREATION_URL}. Response status: {response.status_code}'
-        )
-
     except Exception as e:
         print(f'An error occurred during asynchronous processing: {e}')
 
-        _update_firestore_status(project_id, 'ERR_REQ_EXTRACT_P2')
+        _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P2')
+    
+    final_message_data = {
+        'project_id': project_id,
+        'version': version,
+        'requirements_p2_url': output_url,
+    }
 
+    request = auth_requests.Request()
+    id_token = oauth2_id_token.fetch_id_token(request, TESTCASE_CREATION_URL)
+
+    response = requests.post(
+        TESTCASE_CREATION_URL,
+        headers={'Authorization': f'Bearer {id_token}'},
+        json=final_message_data,
+        timeout=30,
+    )
+
+    print(f'POST request sent to {TESTCASE_CREATION_URL}.')
+
+    response.raise_for_status()
+    print(
+        f'Successfully sent POST request to {TESTCASE_CREATION_URL}. Response status: {response.status_code}'
+    )
 
 # --- Main Cloud Function (HTTP Trigger) ---
 @functions_framework.http
