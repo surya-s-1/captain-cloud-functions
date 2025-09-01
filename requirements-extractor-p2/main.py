@@ -111,9 +111,11 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         input_data = json.loads(blob.download_as_text())
 
         print(f'Successfully downloaded phase 1 requirements from GCS.')
+
         explicit_requirements = []
         implicit_requirements = []
 
+        print(f'Found {len(input_data)} explicit requirements')
         print('Searching for implicit requirements using Vertex AI Discovery Engine...')
 
         for req in input_data:
@@ -125,7 +127,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
                     'regulations': [],
                 }
             )
-            query = f'Regulations related to: "{req['requirement']}"'
+            query = f'Regulations related to: {req['requirement']}'
             discovery_results = query_discovery_engine(query)
             for doc in discovery_results:
                 content = doc.get('content')
@@ -154,7 +156,11 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             2.  For any merged requirements, combine the `sources` values among each other and `regulations` values among each other to form arrays into a single, comprehensive list without duplicates.
             3.  The final `requirement_id` should be a unique sequential number starting from 1.
             4.  Maintain the original `requirement_type` if the requirement is kept. If it's a new, combined requirement, use the type that best describes the merged content (e.g., if a `functional` and `regulation` requirement are merged, the new type should be `regulation`). If both are the same, keep that type.
-            5. Absolutely do not ignore the requiremnts of any type if they are not being combined with another requirement.
+            5. Each string in `sources` should be of format <filename> (<location>). For example, "Medical Regulations.pdf (page: 1) or "Reqirements.txt (row: 4)" or "Requiremnts.docx (paragraph: 20)".
+            6. Absolutely do not ignore the requiremnts of any type if they are not being combined with another requirement.
+            7. Do not down size too much. Instead when combining make sure that crucial content in regulation type requirements is not lost which is extremely important to follow.
+            8. Try to summarize the requirement text in reach requirement if they are in 1st person or even when there are more than 100 words. And remove any filler words or things you think are unnecessay to understand the regulatory requirement.
+            9. Make each requirement into markdown format, if possible into markdown format, and remove any HTML tags if present.
             
             Return the final, deduplicated list in a single JSON array, following this exact schema:
             [
