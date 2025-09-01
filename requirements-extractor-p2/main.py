@@ -33,8 +33,7 @@ serving_config = f'projects/{PROJECT_ID}/locations/{LOCATION}/collections/defaul
 def _update_firestore_status(project_id, version, status):
     '''Updates the status of a specific project version in Firestore.'''
     doc_ref = (
-        firestore_client
-        .collection('projects')
+        firestore_client.collection('projects')
         .document(project_id)
         .collection(f'versions')
         .document(version)
@@ -237,7 +236,9 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             f'Gemini successfully deduplicated and merged requirements. Final count: {len(final_requirements)}'
         )
 
-        output_blob_path = f'requirements/{project_id}/v{version}/requirements-p2.json'
+        output_blob_path = (
+            f'requirements/{project_id}/v_{version}/requirements-phase-2.json'
+        )
         output_url = f'gs://{bucket_name}/{output_blob_path}'
         output_blob = bucket.blob(output_blob_path)
         output_blob.upload_from_string(
@@ -259,8 +260,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         print(f'Manual verification needed: {manual_verification_needed}.')
 
         requirements_collection_ref = (
-            firestore_client
-            .collection('projects')
+            firestore_client.collection('projects')
             .document(project_id)
             .collection('versions')
             .document(version)
@@ -293,7 +293,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         print(f'An error occurred during asynchronous processing: {e}')
 
         _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P2')
-    
+
     final_message_data = {
         'project_id': project_id,
         'version': version,
@@ -316,6 +316,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
     print(
         f'Successfully sent POST request to {TESTCASE_CREATION_URL}. Response status: {response.status_code}'
     )
+
 
 # --- Main Cloud Function (HTTP Trigger) ---
 @functions_framework.http
