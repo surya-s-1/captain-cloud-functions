@@ -156,7 +156,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             2.  For any merged requirements, combine the `sources` values among each other and `regulations` values among each other to form arrays into a single, comprehensive list without duplicates.
             3.  The final `requirement_id` should be a unique sequential number starting from 1.
             4.  Maintain the original `requirement_type` if the requirement is kept. If it's a new, combined requirement, use the type that best describes the merged content (e.g., if a `functional` and `regulation` requirement are merged, the new type should be `regulation`). If both are the same, keep that type.
-            5. Each string in `sources` should be of format <filename> (<location>). For example, "Medical Regulations.pdf (page: 1) or "Reqirements.txt (row: 4)" or "Requiremnts.docx (paragraph: 20)".
+            5. Each string in `sources` should be of format <filename> (<location>). For example, 'Medical Regulations.pdf (page: 1)' or 'Reqirements.txt (row: 4)' or 'Requiremnts.docx (paragraph: 20)'.
             6. Absolutely do not ignore the requiremnts of any type if they are not being combined with another requirement.
             7. Do not down size too much. Instead when combining make sure that crucial content in regulation type requirements is not lost which is extremely important to follow.
             8. Try to summarize the requirement text in reach requirement if they are in 1st person or even when there are more than 100 words. And remove any filler words or things you think are unnecessay to understand the regulatory requirement.
@@ -239,9 +239,47 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         )
         print(f'Saved final requirements to GCS at: {output_url}')
 
+        project_doc = firestore_client.collection('projects').document(project_id).get()
+
+        manual_verification_needed = False
+
+        if project_doc.exists:
+            manual_verification_needed = project_doc.to_dict().get(
+                'manual_verification', False
+            )
+
+        verified_status = not manual_verification_needed
+
+        print(f'Manual verification needed: {manual_verification_needed}.')
+
+        requirements_collection_ref = (
+            firestore_client.collection('projects')
+            .document(project_id)
+            .collection('requirements')
+        )
+        batch = firestore_client.batch()
+
+        for req in final_requirements:
+            req_id = str(req['requirement_id'])
+            doc_ref = requirements_collection_ref.document(req_id)
+
+            req_data = {**req, 'verified': verified_status, 'deleted': False}
+
+            batch.set(doc_ref, req_data)
+
+        batch.commit()
+        print(
+            f'Successfully stored {len(final_requirements)} requirements in Firestore.'
+        )
+
         _update_firestore_status(project_id, 'COMPLETE_REQ_EXTRACT_P2')
 
-        # Make final HTTP POST call
+        if manual_verification_needed:
+            print(
+                'Manual verification is required. Skipping auto creation of test cases.'
+            )
+            return
+
         final_message_data = {
             'project_id': project_id,
             'version': version,
@@ -251,7 +289,6 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         request = auth_requests.Request()
         id_token = oauth2_id_token.fetch_id_token(request, TESTCASE_CREATION_URL)
 
-        # Using a timeout to prevent hanging on network issues
         response = requests.post(
             TESTCASE_CREATION_URL,
             headers={'Authorization': f'Bearer {id_token}'},
