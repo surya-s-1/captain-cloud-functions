@@ -159,7 +159,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             You must perform the following actions:
             1.  Combine requirements that are semantically identical or express the same core idea, regardless of their source or type.
             2.  For any merged requirements, combine the `sources` values among each other and `regulations` values among each other to form arrays into a single, comprehensive list without duplicates.
-            3.  The final `requirement_id` should be a unique sequential number starting from 1.
+            3.  The final `requirement_id` should be a unique sequential id in the format REQ-<id>. For example, REQ-001, REQ-020 etc. If the id crosses four digits, write it as is. For example, REQ-1234.
             4.  Maintain the original `requirement_type` if the requirement is kept. If it's a new, combined requirement, use the type that best describes the merged content (e.g., if a `functional` and `regulation` requirement are merged, the new type should be `regulation`). If both are the same, keep that type.
             5. Each string in `sources` should be of format <filename> (<location>). For example, 'Medical Regulations.pdf (page: 1)' or 'Reqirements.txt (row: 4)' or 'Requiremnts.docx (paragraph: 20)'.
             6. Absolutely do not ignore the requiremnts of any type if they are not being combined with another requirement.
@@ -198,7 +198,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             'items': {
                 'type': 'OBJECT',
                 'properties': {
-                    'requirement_id': {'type': 'INTEGER'},
+                    'requirement_id': {'type': 'STRING'},
                     'requirement': {'type': 'STRING'},
                     'requirement_type': {
                         'type': 'STRING',
