@@ -139,19 +139,27 @@ def _process_files_async(project_id, version, file_urls):
     '''Performs the text extraction and makes the final POST request asynchronously.'''
     try:
         _update_firestore_status(project_id, 'START_TEXT_EXTRACT')
+
         extracted_results = []
+
         for file_url in file_urls:
             try:
+                print(f'extracting from {file_url}...')
+
                 file_name = os.path.basename(urlparse(file_url).path)
                 file_extension = file_name.split('.')[-1].lower()
+
                 result_object = {'file_name': file_name, 'file_url': file_url}
 
                 if file_extension in ['csv', 'xlsx', 'xls']:
                     result_object.update(_extract_from_structured(file_url))
+
                 elif file_extension in ['docx']:
                     result_object.update(_extract_from_word(file_url))
+
                 elif file_extension in ['pdf', 'jpg', 'jpeg', 'png']:
                     result_object.update(_extract_from_document_ai(file_url))
+
                 else:
                     print(f'Skipping unsupported file type: {file_url}')
                     continue
@@ -159,7 +167,6 @@ def _process_files_async(project_id, version, file_urls):
             except Exception as e:
                 print(f'Error processing file {file_url}: {e}')
 
-        # Write the results to a JSON file in GCS
         output_blob_path = f'extracted-text/{project_id}/v{version}.json'
         output_bucket = storage_client.bucket(OUTPUT_BUCKET)
         output_blob = output_bucket.blob(output_blob_path)
