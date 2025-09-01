@@ -7,6 +7,8 @@ import functions_framework
 from google import genai
 from google.cloud import firestore, storage
 from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
+import google.auth.transport.requests as auth_requests
+import google.oauth2.id_token as oauth2_id_token
 
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
 OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
@@ -115,13 +117,19 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
             'requirements_p1_url': requirements_p1_url,
         }
 
+        request = auth_requests.Request()
+        id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P2_URL)
+
         # Using a timeout to prevent hanging on network issues
         response = requests.post(
-            REQ_EXTRACT_P2_URL, json=final_message_data, timeout=30
+            REQ_EXTRACT_P2_URL,
+            headers={'Authorization': f'Bearer {id_token}'},
+            json=final_message_data,
+            timeout=30,
         )
         response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
         print(
-            f'Successfully sent POST request to {REQ_EXTRACT_P2_URL}. Response: {response.text}'
+            f'Successfully sent POST request to {REQ_EXTRACT_P2_URL}. Response status: {response.status_code}'
         )
 
     except Exception as e:
