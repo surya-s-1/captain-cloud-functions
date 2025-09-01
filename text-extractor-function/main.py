@@ -38,11 +38,16 @@ def _update_firestore_status(project_id, status):
 def _download_blob_to_memory(bucket_name, source_blob_name):
     '''Downloads a blob from a GCS bucket to an in-memory byte stream.'''
     bucket = storage_client.bucket(bucket_name)
-    print(f'Attempting to download blob gs://{bucket_name}/{source_blob_name}...')
+
+    print(f'Attempting to download gs://{bucket_name}/{source_blob_name}')
+
     blob = bucket.blob(source_blob_name)
     file_stream = io.BytesIO()
     blob.download_to_file(file_stream)
     file_stream.seek(0)
+
+    print(f'Successfully downloaded gs://{bucket_name}/{source_blob_name}')
+
     return file_stream
 
 
@@ -53,6 +58,7 @@ def _extract_from_structured(file_url):
     blob_name = parsed_url.path.lstrip('/')
 
     print(f'Extracting from structured file: gs://{bucket_name}/{blob_name}')
+
     file_stream = _download_blob_to_memory(bucket_name, blob_name)
 
     if blob_name.lower().endswith('.csv'):
@@ -63,6 +69,7 @@ def _extract_from_structured(file_url):
         raise ValueError(f"Unsupported structured file type: {blob_name}")
 
     extracted_data = []
+
     for row_index, row in df.iterrows():
         extracted_data.append(
             {
@@ -84,6 +91,7 @@ def _extract_from_word(file_url):
     blob_name = parsed_url.path.lstrip('/')
 
     print(f'Extracting from Word document: gs://{bucket_name}/{blob_name}')
+
     file_stream = _download_blob_to_memory(bucket_name, blob_name)
     doc = docx.Document(file_stream)
     extracted_data = []
@@ -149,8 +157,6 @@ def _process_files_async(project_id, version, file_urls):
 
         for file_url in file_urls:
             try:
-                print(f'starting extraction from {file_url}')
-
                 file_name = os.path.basename(urlparse(file_url).path)
                 file_extension = file_name.split('.')[-1].lower()
 
@@ -171,9 +177,13 @@ def _process_files_async(project_id, version, file_urls):
                 else:
                     print(f'Skipping unsupported file type: {file_url}')
                     continue
+
                 extracted_results.append(result_object)
             except Exception as e:
                 print(f'Error processing file {file_url}: {e}')
+
+        if not extracted_results:
+            raise Exception('Nothing extracted.')
 
         output_blob_path = f'extracted-text/{project_id}/v{version}.json'
 
