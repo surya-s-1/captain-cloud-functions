@@ -31,12 +31,16 @@ PROCESSOR_NAME = documentai_client.processor_path(
 # --- Helper Functions ---
 
 
-def _update_firestore_status(project_id, status):
-    '''Updates the status of a project in Firestore.'''
-    doc_ref = firestore_client.collection('projects').document(project_id)
+def _update_firestore_status(project_id, version, status):
+    '''Updates the status of a specific project version in Firestore.'''
+    doc_ref = (
+        firestore_client.collection('projects')
+        .document(project_id)
+        .collection(f'versions')
+        .document(version)
+    )
     update_data = {'status': status}
     doc_ref.set(update_data, merge=True)
-    print(f'Updated status for project {project_id} to {status}.')
 
 
 def _download_blob_to_memory(bucket_name, source_blob_name):
@@ -155,7 +159,7 @@ def _extract_from_document_ai(file_url):
 def _process_files_async(project_id, version, file_urls):
     '''Performs the text extraction and makes the final POST request asynchronously.'''
     try:
-        _update_firestore_status(project_id, 'START_TEXT_EXTRACT')
+        _update_firestore_status(project_id, version, 'START_TEXT_EXTRACT')
 
         extracted_results = []
 
@@ -193,7 +197,7 @@ def _process_files_async(project_id, version, file_urls):
         if not extracted_results:
             raise Exception('Nothing extracted.')
 
-        output_blob_path = f'extracted-text/{project_id}/v{version}.json'
+        output_blob_path = f'extracted-text/{project_id}/v_{version}.json'
 
         print(
             f'All files processed. Uploading results to: {OUTPUT_BUCKET}/{output_blob_path}'
@@ -206,37 +210,37 @@ def _process_files_async(project_id, version, file_urls):
             content_type='application/json',
         )
 
-        _update_firestore_status(project_id, 'COMPLETE_TEXT_EXTRACT')
+        _update_firestore_status(project_id, version, 'COMPLETE_TEXT_EXTRACT')
         extracted_text_url = f'gs://{OUTPUT_BUCKET}/{output_blob_path}'
         print(f'Successfully wrote results to {extracted_text_url}')
-
-        # Make HTTP POST request to final endpoint
-        final_message_data = {
-            'project_id': project_id,
-            'version': version,
-            'extracted_text_url': extracted_text_url,
-        }
-
-        print(f'Sending POST request to {REQ_EXTRACT_P1_URL} with extracted data.')
-
-        request = auth_requests.Request()
-        id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P1_URL)
-
-        # Using a timeout to prevent hanging on network issues
-        response = requests.post(
-            REQ_EXTRACT_P1_URL,
-            headers={'Authorization': f'Bearer {id_token}'},
-            json=final_message_data,
-            timeout=30,
-        )
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
-        print(
-            f'Successfully sent POST request to {REQ_EXTRACT_P1_URL}. Response status: {response.status_code}'
-        )
 
     except Exception as e:
         print(f'An error occurred during asynchronous processing: {e}')
         _update_firestore_status(project_id, 'FAILED_TEXT_EXTRACT')
+    
+    final_message_data = {
+        'project_id': project_id,
+        'version': version,
+        'extracted_text_url': extracted_text_url,
+    }
+
+    print(f'Sending POST request to {REQ_EXTRACT_P1_URL} with extracted data.')
+
+    request = auth_requests.Request()
+    id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P1_URL)
+
+    response = requests.post(
+        REQ_EXTRACT_P1_URL,
+        headers={'Authorization': f'Bearer {id_token}'},
+        json=final_message_data,
+        timeout=30,
+    )
+
+    response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+
+    print(
+        f'Successfully sent POST request to {REQ_EXTRACT_P1_URL}. Response status: {response.status_code}'
+    )
 
 
 # --- Main Cloud Function (HTTP Trigger) ---
