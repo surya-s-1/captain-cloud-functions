@@ -1,24 +1,23 @@
 import os
 import io
-import ast
 import json
 import docx
-import base64
 import mimetypes
 import pandas as pd
 import functions_framework
+import requests
+import threading
 from urllib.parse import urlparse
-from google.cloud import storage, firestore, documentai_v1 as documentai, pubsub_v1
+from google.cloud import storage, firestore, documentai_v1 as documentai
 
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
 PROCESSOR_ID = os.getenv('DOC_AI_PROCESSOR_ID')
 LOCATION = os.getenv('DOC_AI_LOCATION')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
-OUTPUT_TOPIC = os.getenv('OUTPUT_TOPIC')
+REQ_EXTRACT_P1_URL = os.getenv('REQ_EXTRACT_P1_URL')
 
 storage_client = storage.Client()
-pubsub_client = pubsub_v1.PublisherClient()
 firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
 documentai_client = documentai.DocumentProcessorServiceClient()
 PROCESSOR_NAME = documentai_client.processor_path(
@@ -62,7 +61,6 @@ def _extract_from_structured(file_url):
         raise ValueError(f"Unsupported structured file type: {blob_name}")
 
     extracted_data = []
-    # Iterate through rows and create a structured output with location
     for row_index, row in df.iterrows():
         extracted_data.append(
             {
@@ -70,7 +68,6 @@ def _extract_from_structured(file_url):
                 'location': {'row': int(row_index), 'column_headers': list(df.columns)},
             }
         )
-
     return {
         'file_type': 'structured',
         'extracted_by': 'pandas',
@@ -85,16 +82,14 @@ def _extract_from_word(file_url):
     blob_name = parsed_url.path.lstrip('/')
 
     file_stream = _download_blob_to_memory(bucket_name, blob_name)
-
     doc = docx.Document(file_stream)
     extracted_data = []
 
     for para_index, para in enumerate(doc.paragraphs):
-        if para.text.strip():  # Avoid empty paragraphs
+        if para.text.strip():
             extracted_data.append(
                 {'text': para.text, 'location': {'paragraph_number': para_index}}
             )
-
     return {
         'file_type': 'unstructured',
         'extracted_by': 'python-docx',
@@ -116,16 +111,10 @@ def _extract_from_document_ai(file_url):
     content = file_stream.read()
 
     raw_document = documentai.RawDocument(content=content, mime_type=mime_type)
-
-    request = documentai.ProcessRequest(
-        name=PROCESSOR_NAME,
-        raw_document=raw_document,
-    )
-
+    request = documentai.ProcessRequest(name=PROCESSOR_NAME, raw_document=raw_document)
     response = documentai_client.process_document(request=request)
 
     extracted_data = []
-    # Document AI provides detailed page and layout information
     for page_index, page in enumerate(response.document.pages):
         for paragraph in page.paragraphs:
             paragraph_text = ''
@@ -138,7 +127,6 @@ def _extract_from_document_ai(file_url):
                 extracted_data.append(
                     {'text': paragraph_text, 'location': {'page': page_index + 1}}
                 )
-
     return {
         'file_type': 'semistructured',
         'extracted_by': 'document_ai',
@@ -146,61 +134,27 @@ def _extract_from_document_ai(file_url):
     }
 
 
-# --- Main Cloud Function ---
-
-
-@functions_framework.cloud_event
-def extract_text_from_files(event, context=None):
-    '''
-    Cloud Function to extract text from files specified in a Pub/Sub message.
-    '''
+# --- Asynchronous Worker Function ---
+def _process_files_async(project_id, version, file_urls):
+    '''Performs the text extraction and makes the final POST request asynchronously.'''
     try:
-        if (
-            not event
-            or not event.data
-            or not event.data.get('message', None)
-            or not event.data.get('message', {}).get('data', None)
-        ):
-            raise ValueError('Pub/Sub message \'data\' field is missing.')
-
-        # Decode and parse the Pub/Sub message
-        message_payload_str = base64.b64decode(
-            event.data.get('message', {}).get('data', None)
-        ).decode('utf-8')
-        message_payload = ast.literal_eval(message_payload_str)
-
-        project_id = message_payload.get('project_id', None)
-        version = message_payload.get('version', None)
-        file_urls = message_payload.get('files', [])
-
-        if not project_id or not version or not file_urls:
-            print('REQUIRED DETAILS NOT PROVIDED:', project_id, version, file_urls)
-            return
-
         _update_firestore_status(project_id, 'START_TEXT_EXTRACT')
-
         extracted_results = []
-
         for file_url in file_urls:
             try:
                 file_name = os.path.basename(urlparse(file_url).path)
                 file_extension = file_name.split('.')[-1].lower()
-
                 result_object = {'file_name': file_name, 'file_url': file_url}
 
                 if file_extension in ['csv', 'xlsx', 'xls']:
                     result_object.update(_extract_from_structured(file_url))
-
                 elif file_extension in ['docx']:
                     result_object.update(_extract_from_word(file_url))
-
                 elif file_extension in ['pdf', 'jpg', 'jpeg', 'png']:
                     result_object.update(_extract_from_document_ai(file_url))
-
                 else:
                     print(f'Skipping unsupported file type: {file_url}')
                     continue
-
                 extracted_results.append(result_object)
             except Exception as e:
                 print(f'Error processing file {file_url}: {e}')
@@ -209,31 +163,87 @@ def extract_text_from_files(event, context=None):
         output_blob_path = f'extracted-text/{project_id}/v{version}.json'
         output_bucket = storage_client.bucket(OUTPUT_BUCKET)
         output_blob = output_bucket.blob(output_blob_path)
-
         output_blob.upload_from_string(
             data=json.dumps(extracted_results, indent=2),
             content_type='application/json',
         )
 
         _update_firestore_status(project_id, 'COMPLETE_TEXT_EXTRACT')
-
         extracted_text_url = f'gs://{OUTPUT_BUCKET}/{output_blob_path}'
         print(f'Successfully wrote results to {extracted_text_url}')
 
-        final_topic_name = f'projects/{GOOGLE_CLOUD_PROJECT}/topics/{OUTPUT_TOPIC}'
+        # Make HTTP POST request to final endpoint
         final_message_data = {
             'project_id': project_id,
             'version': version,
             'extracted_text_url': extracted_text_url,
         }
 
-        future = pubsub_client.publish(
-            final_topic_name, json.dumps(final_message_data).encode('utf-8')
+        # Using a timeout to prevent hanging on network issues
+        response = requests.post(
+            REQ_EXTRACT_P1_URL, json=final_message_data, timeout=30
+        )
+        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+        print(
+            f'Successfully sent POST request to {REQ_EXTRACT_P1_URL}. Response: {response.text}'
         )
 
-        print(f'Published final message to {final_topic_name}: {future.result()}')
+    except Exception as e:
+        print(f'An error occurred during asynchronous processing: {e}')
+        _update_firestore_status(project_id, 'FAILED_TEXT_EXTRACT')
+
+
+# --- Main Cloud Function (HTTP Trigger) ---
+@functions_framework.http
+def extract_text_from_files(request):
+    '''
+    Cloud Function to extract text from files specified in an HTTP POST request.
+    It returns immediately and processes the request asynchronously.
+    '''
+    try:
+        message_payload = request.get_json(silent=True)
+        if not message_payload:
+            return (
+                json.dumps(
+                    {
+                        'status': 'error',
+                        'message': 'No JSON payload found in request body.',
+                    }
+                ),
+                400,
+            )
+
+        project_id = message_payload.get('project_id', None)
+        version = message_payload.get('version', None)
+        file_urls = message_payload.get('files', [])
+
+        if not project_id or not version or not file_urls:
+            return (
+                json.dumps(
+                    {
+                        'status': 'error',
+                        'message': 'Required details (project_id, version, or files) are missing.',
+                    }
+                ),
+                400,
+            )
+
+        # Start the heavy lifting in a new thread and return immediately
+        worker_thread = threading.Thread(
+            target=_process_files_async, args=(project_id, version, file_urls)
+        )
+        worker_thread.start()
+
+        return (
+            json.dumps(
+                {
+                    'status': 'success',
+                    'message': 'Text extraction process started asynchronously.',
+                }
+            ),
+            202,
+        )  # 202 Accepted status indicates the request has been accepted for processing.
 
     except Exception as e:
-        print(f'An error occurred: {e}')
-        # Re-raise the exception to indicate failure to the Cloud Function runner
-        raise
+        print(f'An error occurred in the main function: {e}')
+        return json.dumps({'status': 'error', 'message': str(e)}), 500
