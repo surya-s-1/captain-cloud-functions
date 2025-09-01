@@ -20,19 +20,24 @@ firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
 genai_client = genai.Client(http_options=HttpOptions(api_version='v1'))
 
 
-def _update_firestore_status(project_id, status):
-    '''Updates the status of a project in Firestore.'''
-    doc_ref = firestore_client.collection('projects').document(project_id)
+def _update_firestore_status(project_id, version, status):
+    '''Updates the status of a specific project version in Firestore.'''
+    doc_ref = (
+        firestore_client.collection('projects')
+        .document(project_id)
+        .collection(f'versions')
+        .document(version)
+    )
     update_data = {'status': status}
     doc_ref.set(update_data, merge=True)
-    print(f'Updated status for project {project_id} to {status}.')
+    print(f'Updated status for project {project_id} version {version} to {status}.')
 
 
 # --- Asynchronous Worker Function ---
 def _process_req_p1_async(project_id, version, extracted_text_url):
     '''Performs the core logic of text analysis and makes the final POST request asynchronously.'''
     try:
-        _update_firestore_status(project_id, 'START_REQ_EXTRACT_P1')
+        _update_firestore_status(project_id, version, 'START_REQ_EXTRACT_P1')
 
         print(
             f'Starting asynchronous processing for project {project_id}, version {version}.'
@@ -126,41 +131,38 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
 
         print(f'Successfully wrote requirements to {requirements_p1_url}')
 
-        _update_firestore_status(project_id, 'COMPLETE_REQ_EXTRACT_P1')
-
-        # Make the final HTTP POST call to the next endpoint
-        final_message_data = {
-            'project_id': project_id,
-            'version': version,
-            'requirements_p1_url': requirements_p1_url,
-        }
-
-        print(
-            f'Preparing to call next endpoint {REQ_EXTRACT_P2_URL} for project {project_id}.'
-        )
-
-        request = auth_requests.Request()
-        id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P2_URL)
-
-        # Using a timeout to prevent hanging on network issues
-        response = requests.post(
-            REQ_EXTRACT_P2_URL,
-            headers={'Authorization': f'Bearer {id_token}'},
-            json=final_message_data,
-            timeout=30,
-        )
-
-        print(f'POST request sent to {REQ_EXTRACT_P2_URL} for project {project_id}.')
-
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
-        print(
-            f'Successfully sent POST request to {REQ_EXTRACT_P2_URL}. Response status: {response.status_code}'
-        )
+        _update_firestore_status(project_id, version, 'COMPLETE_REQ_EXTRACT_P1')
 
     except Exception as e:
         print(f'An error occurred during asynchronous processing: {e}')
 
-        _update_firestore_status(project_id, 'ERR_REQ_EXTRACT_P1')
+        _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P1')
+
+    final_message_data = {
+        'project_id': project_id,
+        'version': version,
+        'requirements_p1_url': requirements_p1_url,
+    }
+
+    request = auth_requests.Request()
+    id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P2_URL)
+
+    response = requests.post(
+        REQ_EXTRACT_P2_URL,
+        headers={'Authorization': f'Bearer {id_token}'},
+        json=final_message_data,
+        timeout=30,
+    )
+
+    print(
+        f'POST request sent to {REQ_EXTRACT_P2_URL} for project {project_id} version {version}.'
+    )
+
+    response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
+
+    print(
+        f'Successfully sent POST request to {REQ_EXTRACT_P2_URL}. Response status: {response.status_code}'
+    )
 
 
 # --- Main Cloud Function (HTTP Trigger) ---
