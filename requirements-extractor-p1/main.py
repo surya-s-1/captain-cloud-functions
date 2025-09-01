@@ -160,7 +160,7 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
 
 # --- Main Cloud Function (HTTP Trigger) ---
 @functions_framework.http
-def process_req_p1(request):
+def process_requirements_phase_1(request):
     '''
     Cloud Function triggered by an HTTP POST request.
     It returns immediately and processes the request asynchronously.
