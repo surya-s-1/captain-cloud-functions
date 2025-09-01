@@ -2,13 +2,17 @@ import os
 import io
 import json
 import docx
+import requests
 import mimetypes
 import pandas as pd
 import functions_framework
-import requests
 import threading
 from urllib.parse import urlparse
 from google.cloud import storage, firestore, documentai_v1 as documentai
+import google.auth.transport.requests as auth_requests
+import google.oauth2.id_token as oauth2_id_token
+
+# --- Environment Variables ---
 
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
 PROCESSOR_ID = os.getenv('DOC_AI_PROCESSOR_ID')
@@ -188,7 +192,7 @@ def _process_files_async(project_id, version, file_urls):
         output_blob_path = f'extracted-text/{project_id}/v{version}.json'
 
         print(f'All files processed. Uploading results to: {OUTPUT_BUCKET}/{output_blob_path}')
-        
+
         output_bucket = storage_client.bucket(OUTPUT_BUCKET)
         output_blob = output_bucket.blob(output_blob_path)
         output_blob.upload_from_string(
@@ -209,9 +213,15 @@ def _process_files_async(project_id, version, file_urls):
 
         print(f'Sending POST request to {REQ_EXTRACT_P1_URL} with extracted data.')
 
+        request = auth_requests.Request()
+        id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P1_URL)
+
         # Using a timeout to prevent hanging on network issues
         response = requests.post(
-            REQ_EXTRACT_P1_URL, json=final_message_data, timeout=30
+            REQ_EXTRACT_P1_URL,
+            headers={'Authorization': f'Bearer {id_token}'},
+            json=final_message_data,
+            timeout=30,
         )
         response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
         print(
