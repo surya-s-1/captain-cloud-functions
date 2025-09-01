@@ -247,8 +247,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         print(f'Saved final requirements to GCS at: {output_url}')
 
         project_version_doc = (
-            firestore_client
-            .collection('projects')
+            firestore_client.collection('projects')
             .document(project_id)
             .collection('versions')
             .document(version)
