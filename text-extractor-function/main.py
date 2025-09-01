@@ -38,6 +38,7 @@ def _update_firestore_status(project_id, status):
 def _download_blob_to_memory(bucket_name, source_blob_name):
     '''Downloads a blob from a GCS bucket to an in-memory byte stream.'''
     bucket = storage_client.bucket(bucket_name)
+    print(f'Attempting to download blob gs://{bucket_name}/{source_blob_name}...')
     blob = bucket.blob(source_blob_name)
     file_stream = io.BytesIO()
     blob.download_to_file(file_stream)
@@ -51,6 +52,7 @@ def _extract_from_structured(file_url):
     bucket_name = parsed_url.netloc
     blob_name = parsed_url.path.lstrip('/')
 
+    print(f'Extracting from structured file: gs://{bucket_name}/{blob_name}')
     file_stream = _download_blob_to_memory(bucket_name, blob_name)
 
     if blob_name.lower().endswith('.csv'):
@@ -81,6 +83,7 @@ def _extract_from_word(file_url):
     bucket_name = parsed_url.netloc
     blob_name = parsed_url.path.lstrip('/')
 
+    print(f'Extracting from Word document: gs://{bucket_name}/{blob_name}')
     file_stream = _download_blob_to_memory(bucket_name, blob_name)
     doc = docx.Document(file_stream)
     extracted_data = []
@@ -103,10 +106,12 @@ def _extract_from_document_ai(file_url):
     bucket_name = parsed_url.netloc
     blob_name = parsed_url.path.lstrip('/')
 
+    print(f'Extracting from Document AI supported file: gs://{bucket_name}/{blob_name}')
     mime_type, _ = mimetypes.guess_type(file_url)
     if not mime_type:
         raise ValueError(f"Could not determine MIME type for file: {file_url}")
 
+    print(f'Downloading file for Document AI processing: {file_url}')
     file_stream = _download_blob_to_memory(bucket_name, blob_name)
     content = file_stream.read()
 
@@ -144,7 +149,7 @@ def _process_files_async(project_id, version, file_urls):
 
         for file_url in file_urls:
             try:
-                print(f'extracting from {file_url}...')
+                print(f'starting extraction from {file_url}')
 
                 file_name = os.path.basename(urlparse(file_url).path)
                 file_extension = file_name.split('.')[-1].lower()
@@ -152,12 +157,15 @@ def _process_files_async(project_id, version, file_urls):
                 result_object = {'file_name': file_name, 'file_url': file_url}
 
                 if file_extension in ['csv', 'xlsx', 'xls']:
+                    print(f'Detected structured file type: {file_extension}. Using pandas.')
                     result_object.update(_extract_from_structured(file_url))
 
                 elif file_extension in ['docx']:
+                    print(f'Detected Word document. Using python-docx.')
                     result_object.update(_extract_from_word(file_url))
 
                 elif file_extension in ['pdf', 'jpg', 'jpeg', 'png']:
+                    print(f'Detected Document AI supported file type: {file_extension}. Using Document AI.')
                     result_object.update(_extract_from_document_ai(file_url))
 
                 else:
@@ -166,6 +174,8 @@ def _process_files_async(project_id, version, file_urls):
                 extracted_results.append(result_object)
             except Exception as e:
                 print(f'Error processing file {file_url}: {e}')
+
+        print(f'All files processed. Uploading results to GCS bucket: {OUTPUT_BUCKET}/{output_blob_path}')
 
         output_blob_path = f'extracted-text/{project_id}/v{version}.json'
         output_bucket = storage_client.bucket(OUTPUT_BUCKET)
@@ -186,6 +196,8 @@ def _process_files_async(project_id, version, file_urls):
             'extracted_text_url': extracted_text_url,
         }
 
+        print(f'Sending POST request to {REQ_EXTRACT_P1_URL} with extracted data.')
+        
         # Using a timeout to prevent hanging on network issues
         response = requests.post(
             REQ_EXTRACT_P1_URL, json=final_message_data, timeout=30
