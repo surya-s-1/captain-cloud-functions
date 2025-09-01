@@ -138,7 +138,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
                         'regulations': [regulation],
                     }
                 )
-        
+
         print(f'Found {len(implicit_requirements)} implicit requirements.')
 
         print('Deduplicating and merging requirements with Gemini...')
@@ -221,7 +221,9 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             ),
         )
         final_requirements = json.loads(response.text)
-        print(f'Gemini successfully deduplicated and merged requirements. Final count: {len(final_requirements)}')
+        print(
+            f'Gemini successfully deduplicated and merged requirements. Final count: {len(final_requirements)}'
+        )
 
         output_blob_path = f'requirements/{project_id}/v{version}/requirements-p2.json'
         output_url = f'gs://{bucket_name}/{output_blob_path}'
@@ -266,7 +268,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
 
 # --- Main Cloud Function (HTTP Trigger) ---
 @functions_framework.http
-def process_requirements(request):
+def process_requirements_phase_2(request):
     '''
     Cloud Function triggered by an HTTP POST request.
     It returns immediately and processes the request asynchronously.
@@ -288,7 +290,9 @@ def process_requirements(request):
         version = message_payload.get('version', None)
         requirements_p1_url = message_payload.get('requirements_p1_url', None)
 
-        print(f'Extracted project_id: {project_id}, version: {version}, requirements_p1_url: {requirements_p1_url}')
+        print(
+            f'Extracted project_id: {project_id}, version: {version}, requirements_p1_url: {requirements_p1_url}'
+        )
 
         if not all([project_id, version, requirements_p1_url]):
             return (
@@ -320,7 +324,7 @@ def process_requirements(request):
             ),
             202,
         )  # 202 Accepted status indicates the request has been accepted for processing.
-    
+
     except Exception as e:
         print(f'An error occurred in the main function: {e}')
         return json.dumps({'status': 'error', 'message': str(e)}), 500
