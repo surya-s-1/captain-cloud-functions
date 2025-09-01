@@ -167,7 +167,9 @@ def _process_files_async(project_id, version, file_urls):
                 result_object = {'file_name': file_name, 'file_url': file_url}
 
                 if file_extension in ['csv', 'xlsx', 'xls']:
-                    print(f'Detected structured file type: {file_extension}. Using pandas.')
+                    print(
+                        f'Detected structured file type: {file_extension}. Using pandas.'
+                    )
                     result_object.update(_extract_from_structured(file_url))
 
                 elif file_extension in ['docx']:
@@ -175,7 +177,9 @@ def _process_files_async(project_id, version, file_urls):
                     result_object.update(_extract_from_word(file_url))
 
                 elif file_extension in ['pdf', 'jpg', 'jpeg', 'png']:
-                    print(f'Detected Document AI supported file type: {file_extension}. Using Document AI.')
+                    print(
+                        f'Detected Document AI supported file type: {file_extension}. Using Document AI.'
+                    )
                     result_object.update(_extract_from_document_ai(file_url))
 
                 else:
@@ -191,7 +195,9 @@ def _process_files_async(project_id, version, file_urls):
 
         output_blob_path = f'extracted-text/{project_id}/v{version}.json'
 
-        print(f'All files processed. Uploading results to: {OUTPUT_BUCKET}/{output_blob_path}')
+        print(
+            f'All files processed. Uploading results to: {OUTPUT_BUCKET}/{output_blob_path}'
+        )
 
         output_bucket = storage_client.bucket(OUTPUT_BUCKET)
         output_blob = output_bucket.blob(output_blob_path)
@@ -225,7 +231,7 @@ def _process_files_async(project_id, version, file_urls):
         )
         response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
         print(
-            f'Successfully sent POST request to {REQ_EXTRACT_P1_URL}. Response: {response.text}'
+            f'Successfully sent POST request to {REQ_EXTRACT_P1_URL}. Response status: {response.status_code}'
         )
 
     except Exception as e:
@@ -235,7 +241,7 @@ def _process_files_async(project_id, version, file_urls):
 
 # --- Main Cloud Function (HTTP Trigger) ---
 @functions_framework.http
-def extract_text_from_files(request):
+def process_documents(request):
     '''
     Cloud Function to extract text from files specified in an HTTP POST request.
     It returns immediately and processes the request asynchronously.
