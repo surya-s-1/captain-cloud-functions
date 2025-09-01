@@ -110,6 +110,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         blob = bucket.blob(blob_path)
         input_data = json.loads(blob.download_as_text())
 
+        print(f'Successfully downloaded phase 1 requirements from GCS.')
         explicit_requirements = []
         implicit_requirements = []
 
@@ -137,6 +138,8 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
                         'regulations': [regulation],
                     }
                 )
+        
+        print(f'Found {len(implicit_requirements)} implicit requirements.')
 
         print('Deduplicating and merging requirements with Gemini...')
 
@@ -218,6 +221,7 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             ),
         )
         final_requirements = json.loads(response.text)
+        print(f'Gemini successfully deduplicated and merged requirements. Final count: {len(final_requirements)}')
 
         output_blob_path = f'requirements/{project_id}/v{version}/requirements-p2.json'
         output_url = f'gs://{bucket_name}/{output_blob_path}'
@@ -246,6 +250,9 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
             json=final_message_data,
             timeout=30,
         )
+
+        print(f'POST request sent to {TESTCASE_CREATION_URL}.')
+
         response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
         print(
             f'Successfully sent POST request to {TESTCASE_CREATION_URL}. Response status: {response.status_code}'
@@ -281,6 +288,8 @@ def process_requirements(request):
         version = message_payload.get('version', None)
         requirements_p1_url = message_payload.get('requirements_p1_url', None)
 
+        print(f'Extracted project_id: {project_id}, version: {version}, requirements_p1_url: {requirements_p1_url}')
+
         if not all([project_id, version, requirements_p1_url]):
             return (
                 json.dumps(
@@ -293,6 +302,9 @@ def process_requirements(request):
             )
 
         # Start the heavy lifting in a new thread and return immediately
+
+        print('Starting asynchronous processing in a new thread.')
+
         worker_thread = threading.Thread(
             target=_process_requirements_async,
             args=(project_id, version, requirements_p1_url),
@@ -308,7 +320,7 @@ def process_requirements(request):
             ),
             202,
         )  # 202 Accepted status indicates the request has been accepted for processing.
-
+    
     except Exception as e:
         print(f'An error occurred in the main function: {e}')
         return json.dumps({'status': 'error', 'message': str(e)}), 500
