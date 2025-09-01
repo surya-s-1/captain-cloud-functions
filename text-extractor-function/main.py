@@ -175,9 +175,10 @@ def _process_files_async(project_id, version, file_urls):
             except Exception as e:
                 print(f'Error processing file {file_url}: {e}')
 
-        print(f'All files processed. Uploading results to GCS bucket: {OUTPUT_BUCKET}/{output_blob_path}')
-
         output_blob_path = f'extracted-text/{project_id}/v{version}.json'
+
+        print(f'All files processed. Uploading results to: {OUTPUT_BUCKET}/{output_blob_path}')
+        
         output_bucket = storage_client.bucket(OUTPUT_BUCKET)
         output_blob = output_bucket.blob(output_blob_path)
         output_blob.upload_from_string(
@@ -197,7 +198,7 @@ def _process_files_async(project_id, version, file_urls):
         }
 
         print(f'Sending POST request to {REQ_EXTRACT_P1_URL} with extracted data.')
-        
+
         # Using a timeout to prevent hanging on network issues
         response = requests.post(
             REQ_EXTRACT_P1_URL, json=final_message_data, timeout=30
