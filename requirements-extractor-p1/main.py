@@ -34,7 +34,9 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
     try:
         _update_firestore_status(project_id, 'START_REQ_EXTRACT_P1')
 
-        print(f'Starting asynchronous processing for project {project_id}, version {version}.')
+        print(
+            f'Starting asynchronous processing for project {project_id}, version {version}.'
+        )
 
         bucket_name, file_path = extracted_text_url[5:].split('/', 1)
         bucket = storage_client.bucket(bucket_name)
@@ -42,8 +44,9 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
         extracted_content = blob.download_as_bytes()
         extracted_data_list = json.loads(extracted_content.decode('utf-8'))
 
-        print(f'Successfully downloaded and parsed extracted text from {extracted_text_url}.')
-
+        print(
+            f'Successfully downloaded and parsed extracted text from {extracted_text_url}.'
+        )
 
         requirement_types = [
             'functional',
@@ -132,7 +135,9 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
             'requirements_p1_url': requirements_p1_url,
         }
 
-        print(f'Preparing to call next endpoint {REQ_EXTRACT_P2_URL} for project {project_id}.')
+        print(
+            f'Preparing to call next endpoint {REQ_EXTRACT_P2_URL} for project {project_id}.'
+        )
 
         request = auth_requests.Request()
         id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P2_URL)
@@ -192,15 +197,17 @@ def process_requirements_phase_1(request):
                 ),
                 400,
             )
-        
-        print(f'Validated project_id: {project_id}, version: {version}, extracted_text_url: {extracted_text_url}.')
+
+        print(
+            f'Validated project_id: {project_id}, version: {version}, extracted_text_url: {extracted_text_url}.'
+        )
 
         # Start the heavy lifting in a new thread and return immediately
         worker_thread = threading.Thread(
             target=_process_req_p1_async, args=(project_id, version, extracted_text_url)
         )
         worker_thread.start()
-        
+
         print(f'Asynchronous worker thread started for project {project_id}.')
 
         return (
