@@ -34,11 +34,16 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
     try:
         _update_firestore_status(project_id, 'START_REQ_EXTRACT_P1')
 
+        print(f'Starting asynchronous processing for project {project_id}, version {version}.')
+
         bucket_name, file_path = extracted_text_url[5:].split('/', 1)
         bucket = storage_client.bucket(bucket_name)
         blob = bucket.blob(file_path)
         extracted_content = blob.download_as_bytes()
         extracted_data_list = json.loads(extracted_content.decode('utf-8'))
+
+        print(f'Successfully downloaded and parsed extracted text from {extracted_text_url}.')
+
 
         requirement_types = [
             'functional',
@@ -49,6 +54,7 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
         ]
 
         prompt = f'''
+        
         You are a highly skilled software requirements analyst for medical devices. Your task is to analyze raw text
         extracted from various documents. You must identify distinct, individual software requirements, deduplicate
         them, and categorize each one. The output must be a single JSON array of requirement objects.
@@ -61,6 +67,7 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
         {json.dumps(extracted_data_list, indent=2)}
         
         Your response MUST be a valid JSON array, and nothing else.
+        
         '''
 
         response_schema = {
@@ -90,6 +97,8 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
             },
         }
 
+        print(f'Generated prompt and response schema for project {project_id}.')
+
         response = genai_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[Content(parts=[Part(text=prompt)], role='user')],
@@ -98,6 +107,9 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
                 response_json_schema=response_schema,
             ),
         )
+
+        print(f'Received response from GenAI for project {project_id}.')
+
         requirements_json = json.loads(response.text)
 
         output_path = f'requirements/{project_id}/v{version}/requirements-p1.json'
@@ -106,6 +118,9 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
             json.dumps(requirements_json, indent=2), content_type='application/json'
         )
         requirements_p1_url = f'gs://{OUTPUT_BUCKET}/{output_path}'
+
+        print(f'Uploaded generated requirements to GCS: {requirements_p1_url}')
+
         print(f'Successfully wrote requirements to {requirements_p1_url}')
 
         _update_firestore_status(project_id, 'COMPLETE_REQ_EXTRACT_P1')
@@ -117,6 +132,8 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
             'requirements_p1_url': requirements_p1_url,
         }
 
+        print(f'Preparing to call next endpoint {REQ_EXTRACT_P2_URL} for project {project_id}.')
+
         request = auth_requests.Request()
         id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P2_URL)
 
@@ -127,6 +144,9 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
             json=final_message_data,
             timeout=30,
         )
+
+        print(f'POST request sent to {REQ_EXTRACT_P2_URL} for project {project_id}.')
+
         response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
         print(
             f'Successfully sent POST request to {REQ_EXTRACT_P2_URL}. Response status: {response.status_code}'
@@ -172,12 +192,16 @@ def process_req_p1(request):
                 ),
                 400,
             )
+        
+        print(f'Validated project_id: {project_id}, version: {version}, extracted_text_url: {extracted_text_url}.')
 
         # Start the heavy lifting in a new thread and return immediately
         worker_thread = threading.Thread(
             target=_process_req_p1_async, args=(project_id, version, extracted_text_url)
         )
         worker_thread.start()
+        
+        print(f'Asynchronous worker thread started for project {project_id}.')
 
         return (
             json.dumps(
