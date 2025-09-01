@@ -120,7 +120,7 @@ def _process_req_p1_async(project_id, version, extracted_text_url):
 
         requirements_json = json.loads(response.text)
 
-        output_path = f'requirements/{project_id}/v{version}/requirements-p1.json'
+        output_path = f'requirements/{project_id}/v_{version}/requirements-phase-1.json'
         output_blob = storage_client.bucket(OUTPUT_BUCKET).blob(output_path)
         output_blob.upload_from_string(
             json.dumps(requirements_json, indent=2), content_type='application/json'
