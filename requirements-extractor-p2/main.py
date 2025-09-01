@@ -246,12 +246,19 @@ def _process_requirements_async(project_id, version, requirements_p1_url):
         )
         print(f'Saved final requirements to GCS at: {output_url}')
 
-        project_doc = firestore_client.collection('projects').document(project_id).get()
+        project_version_doc = (
+            firestore_client
+            .collection('projects')
+            .document(project_id)
+            .collection('versions')
+            .document(version)
+            .get()
+        )
 
         manual_verification_needed = False
 
-        if project_doc.exists:
-            manual_verification_needed = project_doc.to_dict().get(
+        if project_version_doc.exists:
+            manual_verification_needed = project_version_doc.to_dict().get(
                 'manual_verification', False
             )
 
