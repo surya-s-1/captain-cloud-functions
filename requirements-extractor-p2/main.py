@@ -268,7 +268,7 @@ def process_requirements_phase_2(request):
         for req in deduplicated_explicit_requirements:
             req_id = f'REQ-{req_id_counter:03d}'
             doc_ref = requirements_collection_ref.document(req_id)
-            req_data = {**req, 'deleted': False}
+            req_data = {**req, 'requirement_id': req_id, 'deleted': False}
             batch.set(doc_ref, req_data)
             req_id_counter += 1
 
@@ -283,16 +283,16 @@ def process_requirements_phase_2(request):
 
         print('Searching for implicit requirements using Vertex AI Discovery Engine...')
 
-        all_implicit_requirements_raw = []
+        all_implicit_requirements = []
 
         for req in deduplicated_explicit_requirements:
             query = f'Regulations related to: {req.get('requirement')}'
 
             discovery_results = query_discovery_engine(query)
 
-            all_implicit_requirements_raw.extend(discovery_results)
+            all_implicit_requirements.extend(discovery_results)
 
-        print(f'Found {len(all_implicit_requirements_raw)} implicit requirements.')
+        print(f'Found {len(all_implicit_requirements)} implicit requirements.')
 
         ##################################################################################
         #################################################################################
@@ -301,8 +301,6 @@ def process_requirements_phase_2(request):
 
         # --- Step 3: Deduplicate implicit requirements in batches using Gemini ---
         print('Processing implicit requirements in batches with Gemini...')
-
-        final_implicit_requirements = []
 
         implicit_schema = {
             'type': 'ARRAY',
@@ -332,9 +330,9 @@ def process_requirements_phase_2(request):
             },
         }
 
-        for i in range(0, len(all_implicit_requirements_raw), BATCH_SIZE):
+        for i in range(0, len(all_implicit_requirements), BATCH_SIZE):
 
-            batch = all_implicit_requirements_raw[i : i + BATCH_SIZE]
+            batch = all_implicit_requirements[i : i + BATCH_SIZE]
 
             batch_str = json.dumps(batch, indent=2)
 
@@ -396,7 +394,7 @@ def process_requirements_phase_2(request):
             for req in implicit_requirements:
                 req_id = f'REQ-{req_id_counter:03d}'
                 doc_ref = requirements_collection_ref.document(req_id)
-                req_data = {**req, 'deleted': False}
+                req_data = {**req, 'requirement_id': req_id, 'deleted': False}
                 batch.set(doc_ref, req_data)
                 req_id_counter += 1
 
