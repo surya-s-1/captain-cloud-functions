@@ -165,7 +165,7 @@ def process_requirements_phase_2(request):
                 400,
             )
 
-        print(f'Successfully received raw explicit requirements.')
+        print(f'Successfully received explicit requirements.')
 
         #################################################################################
         #################################################################################
@@ -275,6 +275,8 @@ def process_requirements_phase_2(request):
 
         batch.commit()
 
+        _update_firestore_status(project_id, version, 'COMPLETE_EXP_REQ')
+
         #################################################################################
         #################################################################################
         #################################################################################
@@ -294,6 +296,8 @@ def process_requirements_phase_2(request):
             all_implicit_requirements.extend(discovery_results)
 
         print(f'Found {len(all_implicit_requirements)} implicit requirements.')
+
+        _update_firestore_status(project_id, version, 'COMPLETE_IMP_REQ')
 
         ##################################################################################
         #################################################################################
@@ -331,6 +335,12 @@ def process_requirements_phase_2(request):
             },
         }
 
+        _update_firestore_status(project_id, version, 'START_PROCESS_IMP_REQ')
+
+        current_batch = 1
+        
+        num_of_batches = int(len(all_implicit_requirements) / BATCH_SIZE) + 1
+
         for i in range(0, len(all_implicit_requirements), BATCH_SIZE):
 
             batch = all_implicit_requirements[i : i + BATCH_SIZE]
@@ -343,7 +353,7 @@ def process_requirements_phase_2(request):
 
                 You must perform the following actions:
                 1.  Combine requirements that are semantically identical or express the same core idea.
-                2.  If a requirement is big, split it into multiple smaller requirements.
+                2.  If a requirement is big, split it into multiple (maximum 3) smaller requirements.
                 3.  Change any requirement text from 1st person to a regular, objective voice.
                 4.  For any merged requirements, combine the `regulations` values into a single, comprehensive list, without duplicates.
                 5.  Summarize the requirement text to be concise and easy to understand, removing any unnecessary filler words or content.
@@ -402,7 +412,15 @@ def process_requirements_phase_2(request):
 
             batch.commit()
 
-        _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT_P2')
+            _update_firestore_status(
+                project_id,
+                version,
+                f'PROCESS_IMP_REQ_{current_batch}/{num_of_batches}',
+            )
+
+            current_batch += 1
+
+        _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT')
 
         return 'OK', 200
 
@@ -419,7 +437,7 @@ def process_requirements_phase_2(request):
         print(
             'Deleted all documents in the requirements collection due to an error.'
         )
-        
+
         _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P2')
 
         return str(e), 500
