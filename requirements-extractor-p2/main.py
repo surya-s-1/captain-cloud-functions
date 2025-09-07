@@ -183,11 +183,12 @@ def process_requirements_phase_2(request):
 
             You must perform the following actions:
             1.  Combine requirements that are semantically identical or express the same core idea.
-            2.  For any merged requirements, combine the `sources` values into a single, comprehensive list without duplicates.
-            3.  Maintain the original `requirement_type` if the requirement is kept.
-            4.  Each object in `sources` should be of format {{ filename: <filename>, location:  <location>, snippet: <text_used> }}. For example, 'Medical Regulations.pdf (page: 1)' or 'Reqirements.txt (row: 4)' or 'Requiremnts.docx (paragraph: 20)'.
-            5.  Summarize the requirement text in each requirement if they are in 1st person or more than 100 words. And remove any filler words or things you think are unnecessay to understand the requirement.
-            6.  Make each requirement into markdown format, if possible, and remove any HTML tags if present.
+            2.  If a requirement is big, split it into multiple smaller requirements.
+            3.  For any merged requirements, combine the `sources` values into a single, comprehensive list without duplicates.
+            4.  Maintain the original `requirement_type` if the requirement is kept.
+            5.  Each object in `sources` should be of format {{ filename: <filename>, location:  <location>, snippet: <text_used> }}.
+            6.  Summarize the requirement text in each requirement if they are in 1st person or more than 100 words. And remove any filler words or things you think are unnecessay to understand the requirement.
+            7.  Make each requirement into markdown format, if possible, and remove any HTML tags if present.
             
             Return the final, deduplicated list in a single JSON array, following this exact schema. Do not provide a requirement_id.
             [
@@ -341,12 +342,13 @@ def process_requirements_phase_2(request):
                 Some of these requirements may be duplicates or redundant.
 
                 You must perform the following actions:
-                1.  Combine requirements that are semantically identical or express the same core idea, regardless of their source or type.
-                2.  Change any requirement text from 1st person to a regular, objective voice.
-                3.  For any merged requirements, combine the `regulations` values into a single, comprehensive list.
-                4.  Summarize the requirement text to be concise and easy to understand, removing any unnecessary filler words or content.
-                5.  Maintain the `requirement_type` as 'regulation'.
-                6.  Make each requirement into markdown format, if possible, and remove any HTML tags if present.
+                1.  Combine requirements that are semantically identical or express the same core idea.
+                2.  If a requirement is big, split it into multiple smaller requirements.
+                3.  Change any requirement text from 1st person to a regular, objective voice.
+                4.  For any merged requirements, combine the `regulations` values into a single, comprehensive list, without duplicates.
+                5.  Summarize the requirement text to be concise and easy to understand, removing any unnecessary filler words or content.
+                6.  Maintain the `requirement_type` as 'regulation'.
+                7.  Make each requirement into markdown format, if possible, and remove any HTML tags if present.
                 
                 Return the final, deduplicated list in a single JSON array, following this exact schema. Do not provide a requirement_id.
                 [
