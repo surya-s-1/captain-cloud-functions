@@ -118,6 +118,8 @@ def _create_testcases(project_id, version):
                 testcase_id = f'{requirement_id}-TC-{i+1}'
 
                 test_case['testcase_id'] = testcase_id
+                test_case['deleted'] = False
+                test_case['requirement_id'] = requirement_id
 
                 testcase_ref = (
                     firestore_client.collection('projects')
