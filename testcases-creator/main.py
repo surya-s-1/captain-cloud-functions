@@ -35,7 +35,6 @@ def _generate_test_cases(requirement_data):
     prompt = f'''
     You are a medical insdustry QA engineer for medical software development. Based on the following software requirement, generate one or more test cases. 
     The test cases should be in a JSON format as a list of objects. Each test case object must have the following fields:
-    - 'testcase_id': A string in the format 'TC-001', 'TC-002', etc.
     - 'title': A concise title for the test case.
     - 'description': A detailed description of the test case, formatted in markdown with bullet points.
     - 'acceptance_criteria': The criteria that must be met for the test to pass, formatted in markdown with bullet points.
@@ -46,7 +45,6 @@ def _generate_test_cases(requirement_data):
     Example JSON output format:
     [
         {{
-            'testcase_id': 'TC-001',
             'title': 'Verify user registration with valid data',
             'description': '- Enter valid email and password.\n- Click on 'Register' button.',
             'acceptance_criteria': '- The user should be successfully registered.\n- A confirmation email should be sent.',
@@ -60,14 +58,12 @@ def _generate_test_cases(requirement_data):
         'items': {
             'type': 'OBJECT',
             'properties': {
-                'testcase_id': {'type': 'STRING'},
                 'title': {'type': 'STRING'},
                 'description': {'type': 'STRING'},
                 'acceptance_criteria': {'type': 'STRING'},
                 'priority': {'type': 'STRING', 'enum': ['High', 'Medium', 'Low']},
             },
             'required': [
-                'testcase_id',
                 'title',
                 'description',
                 'acceptance_criteria',
@@ -114,26 +110,29 @@ def _create_testcases(project_id, version):
             requirement_data = req_doc.to_dict()
             requirement_id = req_doc.id
 
-            test_cases = _generate_test_cases(requirement_data)
+            testcases = _generate_test_cases(requirement_data)
 
-            for i, test_case in enumerate(test_cases):
-                test_case_id = test_case.get('testcase_id', f'TC-{i+1}')
-                test_case_ref = (
+            batch = firestore_client.batch()
+
+            for i, test_case in enumerate(testcases):
+                testcase_id = f'{requirement_id}-TC-{i+1}'
+
+                test_case['testcase_id'] = testcase_id
+
+                testcase_ref = (
                     firestore_client.collection('projects')
                     .document(project_id)
                     .collection('versions')
                     .document(version)
-                    .collection('requirements')
-                    .document(requirement_id)
-                    .collection('test_cases')
-                    .document(test_case_id)
+                    .collection('testcases')
+                    .document(testcase_id)
                 )
 
-                test_case_ref.set(test_case)
+                batch.create(testcase_ref, test_case)
 
-                print(
-                    f'Stored test case {test_case_id} for requirement {requirement_id}'
-                )
+            batch.commit()
+
+            print(f'Stored {len(testcases)} test cases for requirement {requirement_id}')
 
         _update_firestore_status(project_id, version, 'COMPLETE_TESTCASE_CREATION')
 
