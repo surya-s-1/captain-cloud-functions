@@ -408,7 +408,18 @@ def process_requirements_phase_2(request):
 
     except Exception as e:
         print(f'An error occurred: {e}')
+        # If an error occurs, delete all documents in the 'requirements' collection
+        # for the given project_id and version.
 
+        docs = requirements_collection_ref.get()
+
+        for doc in docs:
+            doc.reference.delete()
+
+        print(
+            'Deleted all documents in the requirements collection due to an error.'
+        )
+        
         _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P2')
 
         return str(e), 500
