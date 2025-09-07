@@ -337,10 +337,6 @@ def process_requirements_phase_2(request):
 
         _update_firestore_status(project_id, version, 'START_PROCESS_IMP_REQ')
 
-        current_batch = 1
-        
-        num_of_batches = int(len(all_implicit_requirements) / BATCH_SIZE) + 1
-
         for i in range(0, len(all_implicit_requirements), BATCH_SIZE):
 
             batch = all_implicit_requirements[i : i + BATCH_SIZE]
@@ -411,14 +407,6 @@ def process_requirements_phase_2(request):
                 req_id_counter += 1
 
             batch.commit()
-
-            _update_firestore_status(
-                project_id,
-                version,
-                f'PROCESS_IMP_REQ_{current_batch}/{num_of_batches}',
-            )
-
-            current_batch += 1
 
         _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT')
 
