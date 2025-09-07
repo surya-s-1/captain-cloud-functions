@@ -1,14 +1,10 @@
 import os
 import json
-import requests
-import threading
 import functions_framework
 from urllib.parse import urlparse
 from google import genai
 from google.cloud import storage, firestore, discoveryengine_v1
 from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
-import google.auth.transport.requests as auth_requests
-import google.oauth2.id_token as oauth2_id_token
 
 # Environment variables
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
@@ -16,12 +12,10 @@ PROJECT_ID = os.getenv('PROJECT_ID')
 LOCATION = os.getenv('LOCATION')
 DATA_STORE_ID = os.getenv('DATA_STORE_ID')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
-TESTCASE_CREATION_URL = os.getenv('TESTCASE_CREATION_URL')
 
-# Pre-defined regulations
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001']
+BATCH_SIZE = 6
 
-# Cloud clients
 storage_client = storage.Client()
 genai_client = genai.Client(http_options=HttpOptions(api_version='v1'))
 discovery_client = discoveryengine_v1.SearchServiceClient()
@@ -31,54 +25,14 @@ serving_config = f'projects/{PROJECT_ID}/locations/{LOCATION}/collections/defaul
 
 
 def _update_firestore_status(project_id, version, status):
-    '''Updates the status of a specific project version in Firestore.'''
-    doc_ref = (
-        firestore_client.collection('projects')
-        .document(project_id)
-        .collection(f'versions')
-        .document(version)
-    )
+
+    doc_ref = firestore_client.document('projects', project_id, 'versions', version)
     update_data = {'status': status}
     doc_ref.set(update_data, merge=True)
+
     print(f'Updated status for project {project_id} version {version} to {status}.')
 
-
-# --- Discovery Engine Helper Function ---
 def query_discovery_engine(query_text):
-    def process_results(response):
-        processed = []
-        valid_prefixes = REGULATIONS
-        for result in response.results:
-            score_list = result.model_scores.get('relevance_score')
-            relevance = (
-                float(score_list.values[0])
-                if score_list and len(score_list.values) > 0
-                else 0.0
-            )
-            content = result.chunk.content
-            regulation = ''
-            link = result.chunk.document_metadata.uri
-            filename = link.split('/')[-1]
-            for prefix in valid_prefixes:
-                if filename.startswith(prefix):
-                    regulation = prefix
-                    break
-            processed.append(
-                {
-                    'relevance': relevance,
-                    'content': content,
-                    'regulation': regulation,
-                }
-            )
-        processed = sorted(processed, key=lambda x: x['relevance'], reverse=True)[:2]
-        return [
-            {
-                'content': p['content'],
-                'regulation': p['regulation'],
-            }
-            for p in processed
-        ]
-
     request = discoveryengine_v1.SearchRequest(
         serving_config=serving_config,
         query=query_text,
@@ -91,245 +45,68 @@ def query_discovery_engine(query_text):
         ),
     )
     response = discovery_client.search(request=request)
-    processed_response = process_results(response)
-    return processed_response
 
+    processed = []
 
-# --- Asynchronous Worker Function ---
-def _process_requirements_async(project_id, version, requirements_p1_url):
-    '''Performs the core requirement analysis and final POST request asynchronously.'''
-    try:
-        print('Starting asynchronous processing...')
+    for page in response.pages:
+        for result in page.results:
+            valid_prefixes = REGULATIONS
+            score_list = result.model_scores.get('relevance_score')
+            relevance = (
+                float(score_list.values[0])
+                if score_list and len(score_list.values) > 0
+                else 0.0
+            )
 
-        _update_firestore_status(project_id, version, 'START_REQ_EXTRACT_P2')
+            content = result.chunk.content
 
-        parsed_url = urlparse(requirements_p1_url)
-        bucket_name = parsed_url.netloc
-        blob_path = parsed_url.path.lstrip('/')
+            regulation = ''
+            link = result.chunk.document_metadata.uri
+            filename = link.split('/')[-1]
 
-        print(
-            f'Downloading requirements from GCS bucket: {bucket_name}, path: {blob_path}'
-        )
+            for prefix in valid_prefixes:
+                if filename.startswith(prefix):
+                    regulation = prefix
+                    break
 
-        bucket = storage_client.bucket(bucket_name)
-        blob = bucket.blob(blob_path)
-        input_data = json.loads(blob.download_as_text())
-
-        print(f'Successfully downloaded phase 1 requirements from GCS.')
-
-        explicit_requirements = []
-        implicit_requirements = []
-
-        print(f'Found {len(input_data)} explicit requirements')
-        print('Searching for implicit requirements using Vertex AI Discovery Engine...')
-
-        for req in input_data:
-            explicit_requirements.append(
+            processed.append(
                 {
-                    'requirement': req['requirement'],
-                    'requirement_type': req['requirement_type'],
-                    'sources': req.get('sources', []),
-                    'regulations': [],
+                    'relevance': relevance,
+                    'content': content,
+                    'regulation': regulation,
+                    'filename': filename,
+                    'page_start': result.chunk.page_span.page_start,
+                    'page_end': result.chunk.page_span.page_end,
+                    'snippet': content,
                 }
             )
-            query = f'Regulations related to: {req['requirement']}'
-            discovery_results = query_discovery_engine(query)
-            for doc in discovery_results:
-                content = doc.get('content')
-                regulation = doc.get('regulation')
-                implicit_requirements.append(
-                    {
-                        'requirement': content,
-                        'requirement_type': 'regulation',
-                        'sources': [],
-                        'regulations': [regulation],
-                    }
-                )
 
-        print(f'Found {len(implicit_requirements)} implicit requirements.')
+    processed = sorted(processed, key=lambda x: x['relevance'], reverse=True)[:2]
 
-        print('Deduplicating and merging requirements with Gemini...')
-
-        all_requirements = explicit_requirements + implicit_requirements
-        requirements_str = json.dumps(all_requirements, indent=2)
-        gemini_prompt = f'''
-            You are an expert in medical device regulations. Your task is to review a list of functional, security, and regulatory requirements. 
-            Some of these requirements may be duplicates or redundant.
-            
-            You must perform the following actions:
-            1.  Combine requirements that are semantically identical or express the same core idea, regardless of their source or type.
-            2.  For any merged requirements, combine the `sources` values among each other and `regulations` values among each other to form arrays into a single, comprehensive list without duplicates.
-            3.  The final `requirement_id` should be a unique sequential id in the format REQ-<id>. For example, REQ-001, REQ-020 etc. If the id crosses four digits, write it as is. For example, REQ-1234.
-            4.  Maintain the original `requirement_type` if the requirement is kept. If it's a new, combined requirement, use the type that best describes the merged content (e.g., if a `functional` and `regulation` requirement are merged, the new type should be `regulation`). If both are the same, keep that type.
-            5. Each string in `sources` should be of format <filename> (<location>). For example, 'Medical Regulations.pdf (page: 1)' or 'Reqirements.txt (row: 4)' or 'Requiremnts.docx (paragraph: 20)'.
-            6. Absolutely do not ignore the requiremnts of any type if they are not being combined with another requirement.
-            7. Do not down size too much. Instead when combining make sure that crucial content in regulation type requirements is not lost which is extremely important to follow.
-            8. Try to summarize the requirement text in reach requirement if they are in 1st person or even when there are more than 100 words. And remove any filler words or things you think are unnecessay to understand the regulatory requirement.
-            9. Make each requirement into markdown format, if possible into markdown format, and remove any HTML tags if present.
-            
-            Return the final, deduplicated list in a single JSON array, following this exact schema:
-            [
-                {{
-                    'requirement_id': integer,
-                    'requirement': string,
-                    'requirement_type': string,
-                    'sources': list of strings,
-                    'regulations': list of strings
-                }}
-            ]
-            
-            Here is the list of requirements to process:
-            
-            ```json
-            {requirements_str}
-            ```
-        '''
-
-        requirement_types = [
-            'functional',
-            'non-functional',
-            'performance',
-            'security',
-            'usability',
-            'regulation',
-        ]
-        response_schema = {
-            'type': 'ARRAY',
-            'items': {
-                'type': 'OBJECT',
-                'properties': {
-                    'requirement_id': {'type': 'STRING'},
-                    'requirement': {'type': 'STRING'},
-                    'requirement_type': {
-                        'type': 'STRING',
-                        'enum': requirement_types,
-                    },
-                    'sources': {
-                        'type': 'ARRAY',
-                        'items': {'type': 'STRING'},
-                    },
-                    'regulations': {
-                        'type': 'ARRAY',
-                        'items': {'type': 'STRING', 'enum': REGULATIONS},
-                    },
-                },
-                'required': [
-                    'requirement_id',
-                    'requirement',
-                    'requirement_type',
-                    'sources',
-                    'regulations',
-                ],
-            },
+    return [
+        {
+            'content': p['content'],
+            'regulation': p['regulation'],
+            'filename': p['filename'],
+            'page_start': p['page_start'],
+            'page_end': p['page_end'],
+            'snippet': p['snippet'],
         }
+        for p in processed
+    ]
 
-        response = genai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[Content(parts=[Part(text=gemini_prompt)], role='user')],
-            config=GenerateContentConfig(
-                response_mime_type='application/json',
-                response_json_schema=response_schema,
-            ),
-        )
-        final_requirements = json.loads(response.text)
-        print(
-            f'Gemini successfully deduplicated and merged requirements. Final count: {len(final_requirements)}'
-        )
 
-        output_blob_path = (
-            f'requirements/{project_id}/v_{version}/requirements-phase-2.json'
-        )
-        output_url = f'gs://{bucket_name}/{output_blob_path}'
-        output_blob = bucket.blob(output_blob_path)
-        output_blob.upload_from_string(
-            json.dumps(final_requirements, indent=4), content_type='application/json'
-        )
-        print(f'Saved final requirements to GCS at: {output_url}')
-
-        project_version_doc = (
-            firestore_client.collection('projects')
-            .document(project_id)
-            .collection('versions')
-            .document(version)
-            .get()
-        )
-
-        manual_verification_needed = False
-
-        if project_version_doc.exists:
-            manual_verification_needed = project_version_doc.to_dict().get(
-                'manual_verification', False
-            )
-
-        verified_status = not manual_verification_needed
-
-        print(f'Manual verification needed: {manual_verification_needed}.')
-
-        requirements_collection_ref = (
-            firestore_client.collection('projects')
-            .document(project_id)
-            .collection('versions')
-            .document(version)
-            .collection('requirements')
-        )
-        batch = firestore_client.batch()
-
-        for req in final_requirements:
-            req_id = str(req['requirement_id'])
-            doc_ref = requirements_collection_ref.document(req_id)
-
-            req_data = {**req, 'verified': verified_status, 'deleted': False}
-
-            batch.set(doc_ref, req_data)
-
-        batch.commit()
-        print(
-            f'Successfully stored {len(final_requirements)} requirements in Firestore.'
-        )
-
-        _update_firestore_status(project_id, version, 'COMPLETE_REQ_EXTRACT_P2')
-
-        if manual_verification_needed:
-            print(
-                'Manual verification is required. Skipping auto creation of test cases.'
-            )
-            return
-
-    except Exception as e:
-        print(f'An error occurred during asynchronous processing: {e}')
-
-        _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P2')
-
-    final_message_data = {
-        'project_id': project_id,
-        'version': version,
-        'requirements_p2_url': output_url,
-    }
-
-    request = auth_requests.Request()
-    id_token = oauth2_id_token.fetch_id_token(request, TESTCASE_CREATION_URL)
-
-    response = requests.post(
-        TESTCASE_CREATION_URL,
-        headers={'Authorization': f'Bearer {id_token}'},
-        json=final_message_data,
-        timeout=30,
-    )
-
-    print(f'POST request sent to {TESTCASE_CREATION_URL}.')
-
-    response.raise_for_status()
-    print(
-        f'Successfully sent POST request to {TESTCASE_CREATION_URL}. Response status: {response.status_code}'
-    )
-
+##################################################################################
+##################################################################################
+##################################################################################
+##################################################################################
 
 # --- Main Cloud Function (HTTP Trigger) ---
 @functions_framework.http
 def process_requirements_phase_2(request):
     '''
     Cloud Function triggered by an HTTP POST request.
-    It returns immediately and processes the request asynchronously.
+    It processes the request synchronously and returns the results upon completion.
     '''
     try:
         message_payload = request.get_json(silent=True)
@@ -363,24 +140,275 @@ def process_requirements_phase_2(request):
                 400,
             )
 
-        print('Starting asynchronous processing in a new thread.')
+        _update_firestore_status(project_id, version, 'START_REQ_EXTRACT_P2')
 
-        worker_thread = threading.Thread(
-            target=_process_requirements_async,
-            args=(project_id, version, requirements_p1_url),
+        parsed_url = urlparse(requirements_p1_url)
+        bucket_name = parsed_url.netloc
+        blob_path = parsed_url.path.lstrip('/')
+
+        print(
+            f'Downloading requirements from GCS bucket: {bucket_name}, path: {blob_path}'
         )
-        worker_thread.start()
 
-        return (
-            json.dumps(
-                {
-                    'status': 'success',
-                    'message': 'Requirement analysis process started asynchronously.',
-                }
+        bucket = storage_client.bucket(bucket_name)
+        blob = bucket.blob(blob_path)
+        explicit_requirements_raw = json.loads(blob.download_as_text())
+
+        if not explicit_requirements_raw:
+            return (
+                json.dumps(
+                    {
+                        'status': 'error',
+                        'message': 'Input data missing from payload.',
+                    }
+                ),
+                400,
+            )
+
+        print(f'Successfully received raw explicit requirements.')
+
+        #################################################################################
+        #################################################################################
+        #################################################################################
+        #################################################################################
+
+        # --- Step 1: Deduplicate explicit requirements with Gemini ---
+        print('Deduplicating explicit requirements with Gemini...')
+
+        explicit_requirements_str = json.dumps(explicit_requirements_raw, indent=2)
+
+        gemini_explicit_dedupe_prompt = f'''
+            You are an expert in medical device regulations. Your task is to review a list of functional, security, and regulatory requirements. 
+            Some of these requirements may be duplicates or redundant.
+
+            You must perform the following actions:
+            1.  Combine requirements that are semantically identical or express the same core idea.
+            2.  For any merged requirements, combine the `sources` values into a single, comprehensive list without duplicates.
+            3.  Maintain the original `requirement_type` if the requirement is kept.
+            4.  Each object in `sources` should be of format {{ filename: <filename>, location:  <location>, snippet: <text_used> }}. For example, 'Medical Regulations.pdf (page: 1)' or 'Reqirements.txt (row: 4)' or 'Requiremnts.docx (paragraph: 20)'.
+            5.  Summarize the requirement text in each requirement if they are in 1st person or more than 100 words. And remove any filler words or things you think are unnecessay to understand the requirement.
+            6.  Make each requirement into markdown format, if possible, and remove any HTML tags if present.
+            
+            Return the final, deduplicated list in a single JSON array, following this exact schema. Do not provide a requirement_id.
+            [
+                {{
+                    'requirement': string,
+                    'requirement_type': string,
+                    'sources': list of objects of type {{
+                        'filename': string,
+                        'location': string,
+                        'snippet': string
+                    }}
+                }}
+            ]
+            
+            Here is the list of requirements to process:
+            
+            ```json
+            {explicit_requirements_str}
+            ```
+        '''
+
+        explicit_schema = {
+            'type': 'ARRAY',
+            'items': {
+                'type': 'OBJECT',
+                'properties': {
+                    'requirement': {'type': 'STRING'},
+                    'requirement_type': {
+                        'type': 'STRING',
+                        'enum': [
+                            'functional',
+                            'non-functional',
+                            'performance',
+                            'security',
+                            'usability',
+                            'regulation',
+                        ],
+                    },
+                    'sources': {
+                        'type': 'ARRAY',
+                        'items': {'type': 'OBJECT'},
+                        'properties': {
+                            'filename': {'type': 'STRING'},
+                            'location': {'type': 'STRING'},
+                            'snippet': {'type': 'STRING'},
+                        },
+                    },
+                },
+                'required': ['requirement', 'requirement_type', 'sources'],
+            },
+        }
+
+        explicit_deduped_response = genai_client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[
+                Content(parts=[Part(text=gemini_explicit_dedupe_prompt)], role='user')
+            ],
+            config=GenerateContentConfig(
+                response_mime_type='application/json',
+                response_json_schema=explicit_schema,
             ),
-            202,
-        )  # 202 Accepted status indicates the request has been accepted for processing.
+        )
+
+        deduplicated_explicit_requirements = json.loads(explicit_deduped_response.text)
+
+        print(
+            f'Found {len(deduplicated_explicit_requirements)} unique requirements.'
+        )
+
+        requirements_collection_ref = firestore_client.collection(
+            'projects', project_id, 'versions', version, 'requirements'
+        )
+
+        req_id_counter = 1
+
+        batch = firestore_client.batch()
+
+        for req in deduplicated_explicit_requirements:
+            req_id = f'REQ-{req_id_counter:03d}'
+            doc_ref = requirements_collection_ref.document(req_id)
+            req_data = {**req, 'deleted': False}
+            batch.set(doc_ref, req_data)
+            req_id_counter += 1
+
+        batch.commit()
+
+        #################################################################################
+        #################################################################################
+        #################################################################################
+        #################################################################################
+
+        # --- Step 2: Get implicit requirements based on the new list ---
+
+        print('Searching for implicit requirements using Vertex AI Discovery Engine...')
+
+        all_implicit_requirements_raw = []
+
+        for req in deduplicated_explicit_requirements:
+            query = f'Regulations related to: {req.get('requirement')}'
+
+            discovery_results = query_discovery_engine(query)
+
+            all_implicit_requirements_raw.extend(discovery_results)
+
+        print(f'Found {len(all_implicit_requirements_raw)} implicit requirements.')
+
+        ##################################################################################
+        #################################################################################
+        #################################################################################
+        #################################################################################
+
+        # --- Step 3: Deduplicate implicit requirements in batches using Gemini ---
+        print('Processing implicit requirements in batches with Gemini...')
+
+        final_implicit_requirements = []
+
+        implicit_schema = {
+            'type': 'ARRAY',
+            'items': {
+                'type': 'OBJECT',
+                'properties': {
+                    'requirement': {'type': 'STRING'},
+                    'requirement_type': {'type': 'STRING', 'enum': ['regulation']},
+                    'regulations': {
+                        'type': 'ARRAY',
+                        'items': {'type': 'OBJECT'},
+                        'properties': {
+                            'regulation': {'type': 'STRING', 'enum': REGULATIONS},
+                            'source': {
+                                'type': 'OBJECT',
+                                'properties': {
+                                    'filename': {'type': 'STRING'},
+                                    'page_start': {'type': 'STRING'},
+                                    'page_end': {'type': 'STRING'},
+                                    'snippet': {'type': 'STRING'},
+                                },
+                            },
+                        },
+                    },
+                },
+                'required': ['requirement', 'requirement_type', 'regulations'],
+            },
+        }
+
+        for i in range(0, len(all_implicit_requirements_raw), BATCH_SIZE):
+
+            batch = all_implicit_requirements_raw[i : i + BATCH_SIZE]
+
+            batch_str = json.dumps(batch, indent=2)
+
+            gemini_implicit_dedupe_prompt = f'''
+                You are an expert in medical device regulations. Your task is to review a list of regulatory requirements retrieved from a discovery engine.
+                Some of these requirements may be duplicates or redundant.
+
+                You must perform the following actions:
+                1.  Combine requirements that are semantically identical or express the same core idea, regardless of their source or type.
+                2.  Change any requirement text from 1st person to a regular, objective voice.
+                3.  For any merged requirements, combine the `regulations` values into a single, comprehensive list.
+                4.  Summarize the requirement text to be concise and easy to understand, removing any unnecessary filler words or content.
+                5.  Maintain the `requirement_type` as 'regulation'.
+                6.  Make each requirement into markdown format, if possible, and remove any HTML tags if present.
+                
+                Return the final, deduplicated list in a single JSON array, following this exact schema. Do not provide a requirement_id.
+                [
+                    {{
+                        'requirement': string,
+                        'requirement_type': string,
+                        'regulations': list of objects of type {{
+                            'regulation': string,
+                            'source': {{
+                                'filename': string,
+                                'page_start': string,
+                                'page_end': string,
+                                'snippet': string
+                            }}
+                        }}
+                    }}
+                ]
+                
+                Here is the list of regulatory requirements to process:
+                
+                ```json
+                {batch_str}
+                ```
+            '''
+
+            implicit_deduped_response = genai_client.models.generate_content(
+                model='gemini-2.5-flash',
+                contents=[
+                    Content(
+                        parts=[Part(text=gemini_implicit_dedupe_prompt)], role='user'
+                    )
+                ],
+                config=GenerateContentConfig(
+                    response_mime_type='application/json',
+                    response_json_schema=implicit_schema,
+                ),
+            )
+
+            implicit_requirements = json.loads(implicit_deduped_response.text)
+
+            print(f'implicit requirements for batch: {len(implicit_requirements)}')
+
+            batch = firestore_client.batch()
+
+            for req in implicit_requirements:
+                req_id = f'REQ-{req_id_counter:03d}'
+                doc_ref = requirements_collection_ref.document(req_id)
+                req_data = {**req, 'deleted': False}
+                batch.set(doc_ref, req_data)
+                req_id_counter += 1
+
+            batch.commit()
+
+        _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT_P2')
+
+        return 'OK', 200
 
     except Exception as e:
-        print(f'An error occurred in the main function: {e}')
-        return json.dumps({'status': 'error', 'message': str(e)}), 500
+        print(f'An error occurred: {e}')
+
+        _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P2')
+
+        return str(e), 500

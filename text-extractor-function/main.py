@@ -2,15 +2,11 @@ import os
 import io
 import json
 import docx
-import requests
 import mimetypes
 import pandas as pd
 import functions_framework
-import threading
 from urllib.parse import urlparse
 from google.cloud import storage, firestore, documentai_v1 as documentai
-import google.auth.transport.requests as auth_requests
-import google.oauth2.id_token as oauth2_id_token
 
 # --- Environment Variables ---
 
@@ -19,7 +15,6 @@ PROCESSOR_ID = os.getenv('DOC_AI_PROCESSOR_ID')
 LOCATION = os.getenv('DOC_AI_LOCATION')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
-REQ_EXTRACT_P1_URL = os.getenv('REQ_EXTRACT_P1_URL')
 
 storage_client = storage.Client()
 firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
@@ -155,10 +150,41 @@ def _extract_from_document_ai(file_url):
     }
 
 
-# --- Asynchronous Worker Function ---
-def _process_files_async(project_id, version, file_urls):
-    '''Performs the text extraction and makes the final POST request asynchronously.'''
+# --- Main Cloud Function (HTTP Trigger) ---
+@functions_framework.http
+def process_documents(request):
+    '''
+    Cloud Function to extract text from files specified in an HTTP POST request.
+    It processes the request synchronously and returns the results upon completion.
+    '''
     try:
+        message_payload = request.get_json(silent=True)
+        if not message_payload:
+            return (
+                json.dumps(
+                    {
+                        'status': 'error',
+                        'message': 'No JSON payload found in request body.',
+                    }
+                ),
+                400,
+            )
+
+        project_id = message_payload.get('project_id', None)
+        version = message_payload.get('version', None)
+        file_urls = message_payload.get('files', [])
+
+        if not project_id or not version or not file_urls:
+            return (
+                json.dumps(
+                    {
+                        'status': 'error',
+                        'message': 'Required details (project_id, version, or files) are missing.',
+                    }
+                ),
+                400,
+            )
+
         _update_firestore_status(project_id, version, 'START_TEXT_EXTRACT')
 
         extracted_results = []
@@ -210,90 +236,26 @@ def _process_files_async(project_id, version, file_urls):
             content_type='application/json',
         )
 
-        _update_firestore_status(project_id, version, 'COMPLETE_TEXT_EXTRACT')
         extracted_text_url = f'gs://{OUTPUT_BUCKET}/{output_blob_path}'
         print(f'Successfully wrote results to {extracted_text_url}')
 
-    except Exception as e:
-        print(f'An error occurred during asynchronous processing: {e}')
-        _update_firestore_status(project_id, 'FAILED_TEXT_EXTRACT')
-    
-    final_message_data = {
-        'project_id': project_id,
-        'version': version,
-        'extracted_text_url': extracted_text_url,
-    }
-
-    print(f'Sending POST request to {REQ_EXTRACT_P1_URL} with extracted data.')
-
-    request = auth_requests.Request()
-    id_token = oauth2_id_token.fetch_id_token(request, REQ_EXTRACT_P1_URL)
-
-    response = requests.post(
-        REQ_EXTRACT_P1_URL,
-        headers={'Authorization': f'Bearer {id_token}'},
-        json=final_message_data,
-        timeout=30,
-    )
-
-    response.raise_for_status()  # Raises an HTTPError for bad responses (4xx or 5xx)
-
-    print(
-        f'Successfully sent POST request to {REQ_EXTRACT_P1_URL}. Response status: {response.status_code}'
-    )
-
-
-# --- Main Cloud Function (HTTP Trigger) ---
-@functions_framework.http
-def process_documents(request):
-    '''
-    Cloud Function to extract text from files specified in an HTTP POST request.
-    It returns immediately and processes the request asynchronously.
-    '''
-    try:
-        message_payload = request.get_json(silent=True)
-        if not message_payload:
-            return (
-                json.dumps(
-                    {
-                        'status': 'error',
-                        'message': 'No JSON payload found in request body.',
-                    }
-                ),
-                400,
-            )
-
-        project_id = message_payload.get('project_id', None)
-        version = message_payload.get('version', None)
-        file_urls = message_payload.get('files', [])
-
-        if not project_id or not version or not file_urls:
-            return (
-                json.dumps(
-                    {
-                        'status': 'error',
-                        'message': 'Required details (project_id, version, or files) are missing.',
-                    }
-                ),
-                400,
-            )
-
-        # Start the heavy lifting in a new thread and return immediately
-        worker_thread = threading.Thread(
-            target=_process_files_async, args=(project_id, version, file_urls)
-        )
-        worker_thread.start()
+        _update_firestore_status(project_id, version, 'COMPLETE_TEXT_EXTRACT')
 
         return (
             json.dumps(
                 {
                     'status': 'success',
-                    'message': 'Text extraction process started asynchronously.',
+                    'project_id': project_id,
+                    'version': version,
+                    'extracted_text_url': extracted_text_url,
                 }
             ),
-            202,
-        )  # 202 Accepted status indicates the request has been accepted for processing.
+            200,
+        )
 
     except Exception as e:
-        print(f'An error occurred in the main function: {e}')
+        print(f'An error occurred: {e}')
+
+        _update_firestore_status(project_id, version, 'ERR_TEXT_EXTRACT')
+
         return json.dumps({'status': 'error', 'message': str(e)}), 500
