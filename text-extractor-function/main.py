@@ -77,7 +77,7 @@ def _extract_from_structured(file_url):
         extracted_data.append(
             {
                 'text': row.to_string(),
-                'location': {'row': int(row_index), 'column_headers': list(df.columns)},
+                'location': {'row': int(row_index)},
             }
         )
     return {
