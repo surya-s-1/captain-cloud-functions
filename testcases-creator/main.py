@@ -1,178 +1,220 @@
 import os
 import json
-import threading
-import functions_framework
+import logging
+import functools
+import time
+import concurrent.futures as futures
+from typing import Any, Dict, List, Tuple
 
+import functions_framework
 from google import genai
 from google.cloud import firestore
 from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 
-FIRESTORE_DATABASE = os.environ.get('FIRESTORE_DATABASE')
+# =====================
+# Environment variables
+# =====================
+FIRESTORE_DATABASE = os.environ.get("FIRESTORE_DATABASE")
+MAX_WORKERS = 16  # concurrency for Gemini calls
+FIRESTORE_COMMIT_CHUNK = 450  # Firestore limit is 500 per batch
+GENAI_TIMEOUT_SECONDS = 90
+GENAI_MODEL = "gemini-2.5-flash"
 
+# =====================
+# Clients
+# =====================
 firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
-genai_client = genai.Client(http_options=HttpOptions(api_version='v1'))
+genai_client = genai.Client(http_options=HttpOptions(api_version="v1"))
+logging.basicConfig(level=logging.INFO)
 
 
-def _update_firestore_status(project_id, version, status):
-    '''Updates the status of a specific project version in Firestore.'''
-    doc_ref = (
-        firestore_client.collection('projects')
-        .document(project_id)
-        .collection(f'versions')
-        .document(version)
-    )
-    update_data = {'status': status}
-    doc_ref.set(update_data, merge=True)
-    print(f'Updated status for project {project_id} version {version} to {status}.')
+# =====================
+# Utilities
+# =====================
+def _update_firestore_status(project_id: str, version: str, status: str):
+    """Updates the status of a project version in Firestore."""
+    doc_ref = firestore_client.document("projects", project_id, "versions", version)
+    doc_ref.set({"status": status}, merge=True)
+    logging.info(f"Status => {status}")
 
 
-def _generate_test_cases(requirement_data):
-    '''
-    Generates test cases for a given requirement using the Gemini model.
-    '''
-    requirement_text = requirement_data['requirement']
+def _retry(max_attempts=3, base_delay=0.5, exc_types=(Exception,)):
+    """A decorator with exponential backoff and jitter for retrying transient errors."""
 
-    prompt = f'''
-    You are a medical insdustry QA engineer for medical software development. Based on the following software requirement, generate one or more test cases. 
-    The test cases should be in a JSON format as a list of objects. Each test case object must have the following fields:
-    - 'title': A concise title for the test case.
-    - 'description': A detailed description of the test case, formatted in markdown with bullet points.
-    - 'acceptance_criteria': The criteria that must be met for the test to pass, formatted in markdown with bullet points.
-    - 'priority': A string value of 'High', 'Medium', or 'Low'.
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(*args, **kwargs):
+            delay = base_delay
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return fn(*args, **kwargs)
+                except exc_types as e:
+                    if attempt == max_attempts:
+                        raise
+                    logging.warning(f"Retry {attempt}/{max_attempts} after error: {e}")
+                    time.sleep(delay)
+                    delay *= 2
+            return None
 
+        return wrapper
+
+    return deco
+
+
+def _firestore_commit_many(
+    doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
+) -> int:
+    """Commits documents in chunks to Firestore."""
+    batch = firestore_client.batch()
+    count = 0
+    total = 0
+    for doc_ref, data in doc_tuples:
+        batch.set(doc_ref, data)
+        count += 1
+        total += 1
+        if count >= FIRESTORE_COMMIT_CHUNK:
+            batch.commit()
+            batch = firestore_client.batch()
+            count = 0
+    if count:
+        batch.commit()
+    return total
+
+
+# =====================
+# Testcase generation
+# =====================
+@_retry(max_attempts=3)
+def _generate_test_cases(requirement_data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Generate test cases for one requirement using Gemini."""
+    requirement_text = requirement_data.get("requirement", "")
+    prompt = f"""
+    You are a medical industry QA engineer. Based on the following requirement, generate JSON test cases.
+    Each test case must include: title, description (markdown bullets), acceptance_criteria (markdown bullets), priority (High/Medium/Low).
+    
     Requirement: {requirement_text}
-
-    Example JSON output format:
-    [
-        {{
-            'title': 'Verify user registration with valid data',
-            'description': '- Enter valid email and password.\n- Click on 'Register' button.',
-            'acceptance_criteria': '- The user should be successfully registered.\n- A confirmation email should be sent.',
-            'priority': 'High'
-        }}
-    ]
-    '''
+    """
 
     response_schema = {
-        'type': 'ARRAY',
-        'items': {
-            'type': 'OBJECT',
-            'properties': {
-                'title': {'type': 'STRING'},
-                'description': {'type': 'STRING'},
-                'acceptance_criteria': {'type': 'STRING'},
-                'priority': {'type': 'STRING', 'enum': ['High', 'Medium', 'Low']},
+        "type": "ARRAY",
+        "items": {
+            "type": "OBJECT",
+            "properties": {
+                "title": {"type": "STRING"},
+                "description": {"type": "STRING"},
+                "acceptance_criteria": {"type": "STRING"},
+                "priority": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
             },
-            'required': [
-                'title',
-                'description',
-                'acceptance_criteria',
-                'priority',
-            ],
+            "required": ["title", "description", "acceptance_criteria", "priority"],
         },
     }
 
+    resp = genai_client.models.generate_content(
+        model=GENAI_MODEL,
+        contents=[Content(parts=[Part(text=prompt)], role="user")],
+        config=GenerateContentConfig(
+            response_mime_type="application/json",
+            response_json_schema=response_schema,
+        ),
+    )
+
+    return json.loads(resp.text)
+
+
+def _create_testcases(project_id: str, version: str) -> None:
+    """Main function to orchestrate testcase creation."""
     try:
-        response = genai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[Content(parts=[Part(text=prompt)], role='user')],
-            config=GenerateContentConfig(
-                response_mime_type='application/json',
-                response_json_schema=response_schema,
-            ),
+        _update_firestore_status(project_id, version, "START_TESTCASE_CREATION")
+
+        requirements_ref = firestore_client.collection(
+            "projects", project_id, "versions", version, "requirements"
         )
+        requirements_docs = list(requirements_ref.stream())
 
-        test_cases_json = json.loads(response.text)
+        logging.info(f"Loaded {len(requirements_docs)} requirements")
 
-        print(f'Generated test cases: {len(test_cases_json)}')
+        # Parallel Gemini calls
+        all_testcases = []
+        with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+            future_to_req = {
+                ex.submit(_generate_test_cases, req_doc.to_dict()): req_doc
+                for req_doc in requirements_docs
+            }
+            for future in futures.as_completed(future_to_req):
+                req_doc = future_to_req[future]
+                req_id = req_doc.id
+                try:
+                    testcases = future.result()
+                    for i, tc in enumerate(testcases, start=1):
+                        tc_id = f"{req_id}-TC-{i}"
+                        all_testcases.append(
+                            (
+                                firestore_client.collection("projects")
+                                .document(project_id)
+                                .collection("versions")
+                                .document(version)
+                                .collection("testcases")
+                                .document(tc_id),
+                                {
+                                    **tc,
+                                    "testcase_id": tc_id,
+                                    "requirement_id": req_id,
+                                    "deleted": False,
+                                },
+                            )
+                        )
+                    logging.info(f"✓ {req_id} => {len(testcases)} testcases")
+                except Exception as e:
+                    logging.warning(f"Error for {req_id}: {e}")
 
-        return test_cases_json
-    except Exception as e:
-        print(f'Error generating test cases: {e}')
-        return []
+        # Bulk Firestore write
+        total_written = _firestore_commit_many(all_testcases)
+        logging.info(f"Stored {total_written} testcases in Firestore")
 
-
-def _create_testcases(project_id, version):
-    try:
-        _update_firestore_status(project_id, version, 'START_TESTCASE_CREATION')
-
-        requirements_ref = (
-            firestore_client.collection('projects')
-            .document(project_id)
-            .collection('versions')
-            .document(version)
-            .collection('requirements')
-        )
-
-        requirements_docs = requirements_ref.get()
-
-        for req_doc in requirements_docs:
-            requirement_data = req_doc.to_dict()
-            requirement_id = req_doc.id
-
-            testcases = _generate_test_cases(requirement_data)
-
-            batch = firestore_client.batch()
-
-            for i, test_case in enumerate(testcases):
-                testcase_id = f'{requirement_id}-TC-{i+1}'
-
-                test_case['testcase_id'] = testcase_id
-                test_case['deleted'] = False
-                test_case['requirement_id'] = requirement_id
-
-                testcase_ref = (
-                    firestore_client.collection('projects')
-                    .document(project_id)
-                    .collection('versions')
-                    .document(version)
-                    .collection('testcases')
-                    .document(testcase_id)
-                )
-
-                batch.create(testcase_ref, test_case)
-
-            batch.commit()
-
-            print(f'Stored {len(testcases)} test cases for requirement {requirement_id}')
-
-        _update_firestore_status(project_id, version, 'COMPLETE_TESTCASE_CREATION')
+        _update_firestore_status(project_id, version, "COMPLETE_TESTCASE_CREATION")
 
     except Exception as e:
-        print(f'An error occurred: {e}')
+        logging.exception("Error during testcase creation")
 
-        _update_firestore_status(project_id, version, 'ERR_TESTCASE_CREATION')
+        _update_firestore_status(project_id, version, "ERR_TESTCASE_CREATION")
 
 
+# =====================
+# HTTP entrypoint
+# =====================
 @functions_framework.http
 def process_for_testcases(request):
+    """Main HTTP entrypoint for testcase generation."""
     try:
         request_json = request.get_json(silent=True)
         if not request_json:
-            return {'error': 'JSON body not provided.'}, 400
+            return {"error": "JSON body not provided."}, 400
 
-        project_id = request_json.get('project_id')
-        version = request_json.get('version')
+        project_id = request_json.get("project_id")
+        version = request_json.get("version")
 
         if not project_id or not version:
-            return {'error': 'Missing project_id or version in the request body.'}, 400
+            return {"error": "Missing project_id or version"}, 400
 
-        print(f'Extracted project_id: {project_id}, version: {version}')
-
-        worker_thread = threading.Thread(
-            target=_create_testcases,
-            args=(project_id, version),
+        logging.info(
+            f"Start testcase generation for project={project_id}, version={version}"
         )
-        worker_thread.start()
+
+        # Run async in background thread so HTTP returns immediately
+        import threading
+
+        worker = threading.Thread(target=_create_testcases, args=(project_id, version))
+        worker.start()
 
         return (
             json.dumps(
                 {
-                    'status': 'success',
-                    'message': 'Requirement analysis process started asynchronously.',
+                    "status": "success",
+                    "message": "Testcase generation started asynchronously",
                 }
             ),
             202,
-        )  # 202 Accepted status indicates the request has been accepted for processing.
+        )
+
     except Exception as e:
-        return {'error': f'An unexpected error occurred: {e}'}, 500
+        return {"error": str(e)}, 500
