@@ -192,17 +192,7 @@ def process_requirements_phase_1(request):
 
         _update_firestore_status(project_id, version, "COMPLETE_REQ_EXTRACT_P1")
 
-        return (
-            json.dumps(
-                {
-                    "status": "success",
-                    "project_id": project_id,
-                    "version": version,
-                    "requirements_p1_url": requirements_p1_url,
-                }
-            ),
-            200,
-        )
+        return requirements_p1_url, 200
 
     except Exception as e:
         logging.exception("Phase 1 failed")
