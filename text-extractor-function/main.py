@@ -65,21 +65,25 @@ def _extract_from_structured(file_url):
     file_stream = _download_blob_to_memory(bucket_name, blob_name)
 
     if blob_name.lower().endswith('.csv'):
-        df = pd.read_csv(file_stream)
+        df = pd.read_csv(file_stream, na_filter=False)
     elif blob_name.lower().endswith(('.xlsx', '.xls')):
-        df = pd.read_excel(file_stream, engine='openpyxl')
+        df = pd.read_excel(file_stream, engine='openpyxl', na_filter=False)
     else:
         raise ValueError(f"Unsupported structured file type: {blob_name}")
 
     extracted_data = []
 
     for row_index, row in df.iterrows():
+        row_dict = row.to_dict()
         extracted_data.append(
             {
-                'text': row.to_string(),
+                'text': json.dumps(
+                    row_dict
+                ),
                 'location': {'row': int(row_index)},
             }
         )
+
     return {
         'file_type': 'structured',
         'extracted_by': 'pandas',
