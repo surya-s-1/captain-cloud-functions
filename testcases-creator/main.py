@@ -16,7 +16,7 @@ from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 # =====================
 FIRESTORE_DATABASE = os.environ.get("FIRESTORE_DATABASE")
 MAX_WORKERS = 16  # concurrency for Gemini calls
-FIRESTORE_COMMIT_CHUNK = 50  # Firestore limit is 500 per batch
+FIRESTORE_COMMIT_CHUNK = 450  # Firestore limit is 500 per batch
 GENAI_TIMEOUT_SECONDS = 90
 GENAI_MODEL = "gemini-2.5-flash"
 
