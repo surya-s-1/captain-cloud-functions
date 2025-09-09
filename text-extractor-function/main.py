@@ -227,7 +227,7 @@ def process_documents(request):
         if not extracted_results:
             raise Exception('Nothing extracted.')
 
-        output_blob_path = f'extracted-text/{project_id}/v_{version}.json'
+        output_blob_path = f'projects/{project_id}/v_{version}/extractions/text.json'
 
         print(
             f'All files processed. Uploading results to: {OUTPUT_BUCKET}/{output_blob_path}'
@@ -245,21 +245,9 @@ def process_documents(request):
 
         _update_firestore_status(project_id, version, 'COMPLETE_TEXT_EXTRACT')
 
-        return (
-            json.dumps(
-                {
-                    'status': 'success',
-                    'project_id': project_id,
-                    'version': version,
-                    'extracted_text_url': extracted_text_url,
-                }
-            ),
-            200,
-        )
+        return extracted_text_url, 200
 
     except Exception as e:
         print(f'An error occurred: {e}')
-
         _update_firestore_status(project_id, version, 'ERR_TEXT_EXTRACT')
-
         return json.dumps({'status': 'error', 'message': str(e)}), 500
