@@ -31,7 +31,7 @@ EXPL_BATCH_SIZE = 10 # Gemini explicit-dedupe batch size
 IMPL_BATCH_SIZE = 10 # Gemini implicit-dedupe batch size
 MAX_WORKERS = 16 # Thread pool concurrency for parallel API calls
 FUZZY_SIM_THRESHOLD = 90 # Pre-dedupe local similarity threshold (0-100)
-FIRESTORE_COMMIT_CHUNK = 450 # <= 500 per batch write limit
+FIRESTORE_COMMIT_CHUNK = 50 # <= 500 per batch write limit
 GENAI_MODEL = "gemini-2.5-flash" # The model used for all LLM-based processing
 GENAI_API_VERSION = "v1"
 GENAI_TIMEOUT_SECONDS = 90 # Each LLM call safety timeout
