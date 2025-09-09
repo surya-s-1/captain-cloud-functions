@@ -183,7 +183,7 @@ def process_requirements_phase_1(request):
         logging.info(f"Extracted {len(all_requirements)} requirements")
 
         # Save to GCS
-        output_path = f"requirements/{project_id}/v_{version}/requirements-phase-1.json"
+        output_path = f"projects/{project_id}/v_{version}/extractions/requirements-phase-1.json"
         output_blob = storage_client.bucket(OUTPUT_BUCKET).blob(output_path)
         output_blob.upload_from_string(
             json.dumps(all_requirements, indent=2), content_type="application/json"
