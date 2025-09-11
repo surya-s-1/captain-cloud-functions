@@ -130,7 +130,7 @@ def _generate_test_cases(requirement_data: Dict[str, Any]) -> List[Dict[str, Any
 # Processes a single requirement to generate test cases
 # =======================================================
 @functions_framework.http
-def generate_test_cases_task(request):
+def generate_test_cases(request):
     '''
     Cloud Task worker that generates test cases for a single requirement.
     '''
