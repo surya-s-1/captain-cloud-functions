@@ -43,11 +43,9 @@ def process_for_testcases(request):
 
         logging.info(f'Start orchestration for project={project_id}, version={version}')
 
-        firestore_client.document(
-            f'projects/{project_id}/versions/{version}'
-            ).update(
-                {'status': 'START_TASK_CREATION'}
-            )
+        firestore_client.document(f'projects/{project_id}/versions/{version}').update(
+            {'status': 'START_TASK_CREATION'}
+        )
 
         requirements_ref = firestore_client.collection(
             'projects', project_id, 'versions', version, 'requirements'
@@ -57,7 +55,11 @@ def process_for_testcases(request):
         query = requirements_ref.where('deleted', '!=', True).where(
             'status',
             'not in',
-            ['TASK_CREATION_QUEUED', 'TASK_CREATION_STARTED', 'TASK_CREATION_COMPLETE'],
+            [
+                'TESTCASES_CREATION_QUEUED',
+                'TESTCASES_CREATION_STARTED',
+                'TESTCASES_CREATION_COMPLETE',
+            ],
         )
 
         requirements_to_process = query.get()
@@ -90,9 +92,7 @@ def process_for_testcases(request):
                 tasks_client.create_task(parent=QUEUE_NAME, task=task)
                 firestore_client.document(
                     f'projects/{project_id}/versions/{version}/requirements/{req_doc.id}'
-                ).update(
-                    {'status': 'TASK_CREATION_QUEUED'}
-                )
+                ).update({'status': 'TESTCASES_CREATION_QUEUED'})
                 docs_to_update.append(req_doc.id)
 
             except Exception as e:

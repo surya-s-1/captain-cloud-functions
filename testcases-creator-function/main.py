@@ -167,7 +167,7 @@ def generate_test_cases_task(request):
             return {'status': 'skipped', 'message': 'Already processed, skipping.'}, 200
 
         _update_requirement_status(
-            project_id, version, requirement_id, 'TASK_CREATION_STARTED'
+            project_id, version, requirement_id, 'TESTCASES_CREATION_STARTED'
         )
 
         # Generate test cases using Gemini
@@ -217,7 +217,7 @@ def generate_test_cases_task(request):
         )
 
         _update_requirement_status(
-            project_id, version, requirement_id, 'TASK_CREATION_COMPLETE'
+            project_id, version, requirement_id, 'TESTCASES_CREATION_COMPLETE'
         )
 
         return (
