@@ -1,0 +1,6 @@
+functions-framework==3.*
+google-cloud-storage==3.3.0
+google-cloud-firestore==2.21.0
+pandas==2.3.2
+gcsfs==2025.9.0
+xlsxwriter==3.2.6
