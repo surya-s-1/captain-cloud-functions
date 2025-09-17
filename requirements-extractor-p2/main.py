@@ -18,7 +18,6 @@ from google.cloud import storage, firestore, discoveryengine_v1
 # =====================
 # Environment variables
 # =====================
-# IMPORTANT: These are set by the cloud environment and should not be changed.
 GOOGLE_CLOUD_PROJECT = os.environ.get("GOOGLE_CLOUD_PROJECT")
 PROJECT_ID = os.getenv("PROJECT_ID")
 LOCATION = os.getenv("LOCATION")
@@ -27,17 +26,17 @@ FIRESTORE_DATABASE = os.getenv("FIRESTORE_DATABASE")
 
 # Tunables (safe defaults for speed and cost-efficiency)
 REGULATIONS = ["FDA", "IEC 62304", "ISO 9001", "ISO 13485", "ISO 27001", "SaMD"]
-EXPL_BATCH_SIZE = 10 # Gemini explicit-dedupe batch size
-IMPL_BATCH_SIZE = 10 # Gemini implicit-dedupe batch size
-MAX_WORKERS = 16 # Thread pool concurrency for parallel API calls
-FUZZY_SIM_THRESHOLD = 90 # Pre-dedupe local similarity threshold (0-100)
-FIRESTORE_COMMIT_CHUNK = 450 # <= 500 per batch write limit
-GENAI_MODEL = "gemini-2.5-flash" # The model used for all LLM-based processing
+EXPL_BATCH_SIZE = 10  # Gemini explicit-dedupe batch size
+IMPL_BATCH_SIZE = 10  # Gemini implicit-dedupe batch size
+MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
+FUZZY_SIM_THRESHOLD = 90  # Pre-dedupe local similarity threshold (0-100)
+FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
+GENAI_MODEL = "gemini-2.5-flash"  # The model used for all LLM-based processing
 GENAI_API_VERSION = "v1"
-GENAI_TIMEOUT_SECONDS = 90 # Each LLM call safety timeout
+GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
 
 # =====================
-# Clients (module singletons for efficiency)
+# Clients
 # =====================
 storage_client = storage.Client()
 firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
@@ -138,10 +137,7 @@ def _pre_dedupe_local(requirements: List[Dict[str, Any]]) -> List[Dict[str, Any]
 
     for r in requirements:
         req_text = (
-            r.get("requirement")
-            or r.get("text")
-            or r.get("title")
-            or json.dumps(r)
+            r.get("requirement") or r.get("text") or r.get("title") or json.dumps(r)
         )
         norm_text = _normalize_text(req_text)
         is_duplicate = any(
@@ -160,17 +156,21 @@ def _pre_dedupe_local(requirements: List[Dict[str, Any]]) -> List[Dict[str, Any]
                 }
             )
 
-    print(f"Pre-dedupe => {len(unique_reqs)} items from {len(requirements)} initial items.")
+    print(
+        f"Pre-dedupe => {len(unique_reqs)} items from {len(requirements)} initial items."
+    )
     return unique_reqs
 
 
 def _chunk(lst: list, n: int) -> Iterator[list]:
     """Yields successive n-sized chunks from a list."""
     for i in range(0, len(lst), n):
-        yield lst[i:i + n]
+        yield lst[i : i + n]
 
 
-def _firestore_commit_many(doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]]) -> int:
+def _firestore_commit_many(
+    doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
+) -> int:
     """Commits a list of documents to Firestore in batches."""
     batch = firestore_client.batch()
     count = 0
@@ -210,6 +210,8 @@ EXPLICIT_SCHEMA = {
         "properties": {
             "requirement": {"type": "STRING"},
             "requirement_type": {"type": "STRING"},
+            "requirement_title": {"type": "STRING"},
+            "priority": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
             "sources": {
                 "type": "ARRAY",
                 "items": {
@@ -222,19 +224,19 @@ EXPLICIT_SCHEMA = {
                 },
             },
         },
-        "required": ["requirement", "requirement_type", "sources"],
+        "required": [
+            "requirement",
+            "requirement_type",
+            "requirement_title",
+            "priority",
+            "sources",
+        ],
     },
 }
 
 
 # A short, targeted prompt for implicit (regulatory) requirement deduplication.
-IMPLICIT_PROMPT_TPL = (
-    "You are an expert in medical device regulations. Deduplicate and split the "
-    "regulatory items below. Keep the 'requirement_type' as 'regulation', and use a "
-    "concise, objective tone in markdown. Merge regulations that are the same. "
-    "Return ONLY a JSON array with the following schema.\n\n"
-    "Input JSON:\n```json\n{payload}\n```"
-)
+IMPLICIT_PROMPT_TPL = "You are an expert in medical device regulations. Deduplicate and split the regulatory items below. Keep the 'requirement_type' as 'regulation', and use a concise, objective tone in markdown. Merge regulations that are the same. Return ONLY a JSON array with the following schema. Requirement title should be within 5-10 words representative of the main purpose of the requirement.\n\nInput JSON:\n```json\n{payload}\n```"
 
 # Schema for the implicit requirements deduplication.
 IMPLICIT_SCHEMA = {
@@ -244,6 +246,8 @@ IMPLICIT_SCHEMA = {
         "properties": {
             "requirement": {"type": "STRING"},
             "requirement_type": {"type": "STRING"},
+            "requirement_title": {"type": "STRING"},
+            "priority": {"type": "STRING", "enum": ["High", "Medium", "Low"]},
             "regulations": {
                 "type": "ARRAY",
                 "items": {
@@ -263,7 +267,13 @@ IMPLICIT_SCHEMA = {
                 },
             },
         },
-        "required": ["requirement", "requirement_type", "regulations"],
+        "required": [
+            "requirement",
+            "requirement_type",
+            "requirement_title",
+            "priority",
+            "regulations",
+        ],
     },
 }
 
@@ -271,6 +281,7 @@ IMPLICIT_SCHEMA = {
 # =====================
 # Core Processing Functions
 # =====================
+
 
 @_retry(max_attempts=3)
 def _genai_json_call(model: str, prompt: str, schema: dict) -> list:
@@ -315,9 +326,11 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
     for page in response.pages:
         for result in page.results:
             relevance = 0.0
-            if result.model_scores and hasattr(result.model_scores.get("relevance_score"), 'values'):
+            if result.model_scores and hasattr(
+                result.model_scores.get("relevance_score"), 'values'
+            ):
                 relevance = float(result.model_scores.get("relevance_score").values[0])
-            
+
             link = result.chunk.document_metadata.uri
             filename = link.split("/")[-1]
             regulation = next(
@@ -339,13 +352,13 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
     return processed[:2]  # Return top 2 results
 
 
-def _query_discovery_engine_parallel(requirements: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _query_discovery_engine_parallel(
+    requirements: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
     """
     Queries Discovery Engine for multiple requirements in parallel using a thread pool.
     """
-    queries = [
-        f"Regulations related to: {r.get('requirement')}" for r in requirements
-    ]
+    queries = [f"Regulations related to: {r.get('requirement')}" for r in requirements]
     all_results = []
     with futures.ThreadPoolExecutor(
         max_workers=min(MAX_WORKERS, len(queries) or 1)
@@ -355,19 +368,21 @@ def _query_discovery_engine_parallel(requirements: List[Dict[str, Any]]) -> List
     return all_results
 
 
-def _load_and_normalize_explicit_requirements(requirements_p1_url: str) -> List[Dict[str, Any]]:
+def _load_and_normalize_explicit_requirements(
+    requirements_p1_url: str,
+) -> List[Dict[str, Any]]:
     """Loads and normalizes explicit requirements from a GCS bucket."""
     parsed = urlparse(requirements_p1_url)
     bucket = storage_client.bucket(parsed.netloc)
     blob = bucket.blob(parsed.path.lstrip("/"))
     explicit_requirements_raw = json.loads(blob.download_as_text())
-    
+
     if not explicit_requirements_raw:
         raise ValueError("Input data from GCS is empty.")
 
     # Normalize all incoming raw items immediately
     normalized_list = normalize_req_dict(explicit_requirements_raw)
-    
+
     # Perform local fuzzy deduplication as a fast pre-processing step
     print("Pre-deduping locally (fuzzy)...")
     deduped_local = _pre_dedupe_local(normalized_list)
@@ -378,7 +393,7 @@ def _dedupe_requirements_with_gemini(
     requirements: List[Dict[str, Any]],
     prompt_template: str,
     schema: Dict[str, Any],
-    batch_size: int
+    batch_size: int,
 ) -> List[Dict[str, Any]]:
     """Deduplicates a list of requirements using Gemini in parallel batches."""
     batches = list(_chunk(requirements, batch_size))
@@ -400,10 +415,7 @@ def _dedupe_requirements_with_gemini(
 
 
 def _persist_requirements_to_firestore(
-    project_id: str,
-    version: str,
-    requirements: List[Dict[str, Any]],
-    start_id: int
+    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int
 ) -> int:
     """Writes a list of requirements to Firestore in batches."""
     requirements_collection_ref = firestore_client.collection(
@@ -412,7 +424,12 @@ def _persist_requirements_to_firestore(
     doc_tuples = [
         (
             requirements_collection_ref.document(f"REQ-{i:03d}"),
-            {**req, "requirement_id": f"REQ-{i:03d}", "deleted": False},
+            {
+                **req,
+                "requirement_id": f"REQ-{i:03d}",
+                "deleted": False,
+                "created_at": firestore.SERVER_TIMESTAMP,
+            },
         )
         for i, req in enumerate(requirements, start=start_id)
     ]
@@ -426,8 +443,7 @@ def _persist_requirements_to_firestore(
 @functions_framework.http
 def process_requirements_phase_2(request):
     """
-    Main Cloud Function entry point for requirements processing Phase 2.
-    It orchestrates the deduplication and ingestion of explicit and implicit
+    Main Cloud Function entry point for requirements processing Phase 2. It orchestrates the deduplication and ingestion of explicit and implicit
     requirements.
     """
     try:
@@ -438,35 +454,34 @@ def process_requirements_phase_2(request):
 
         if not all([project_id, version, requirements_p1_url]):
             return (
-                json.dumps({
-                    "status": "error",
-                    "message": "Required details (project_id, version, requirements_p1_url) are missing."
-                }), 400
+                json.dumps(
+                    {
+                        "status": "error",
+                        "message": "Required details (project_id, version, requirements_p1_url) are missing.",
+                    }
+                ),
+                400,
             )
 
         _update_firestore_status(project_id, version, "START_REQ_EXTRACT_P2")
 
-        # ------- Step 1: Load and deduplicate explicit requirements
+        # ------- Step 1: Load and deduplicate explicit requirements locally
         print("Starting explicit requirement processing...")
-        explicit_reqs_shrunk = _load_and_normalize_explicit_requirements(requirements_p1_url)
+        explicit_reqs_shrunk = _load_and_normalize_explicit_requirements(
+            requirements_p1_url
+        )
         print(f"Loaded and locally deduped {len(explicit_reqs_shrunk)} items.")
 
+        # ------- Step 2: Deduplicate explicit requirements with Gemini
         _update_firestore_status(project_id, version, "DEDUP_EXPLICIT_WITH_GEMINI")
         deduped_explicit = _dedupe_requirements_with_gemini(
-            explicit_reqs_shrunk,
-            EXPLICIT_PROMPT_TPL,
-            EXPLICIT_SCHEMA,
-            EXPL_BATCH_SIZE
+            explicit_reqs_shrunk, EXPLICIT_PROMPT_TPL, EXPLICIT_SCHEMA, EXPL_BATCH_SIZE
         )
         print(f"Gemini explicit => {len(deduped_explicit)} unique requirements.")
 
-        # ------- Step 2: Persist explicit requirements to Firestore
         _update_firestore_status(project_id, version, "WRITE_EXPLICIT_TO_FIRESTORE")
         total_written = _persist_requirements_to_firestore(
-            project_id,
-            version,
-            deduped_explicit,
-            start_id=1
+            project_id, version, deduped_explicit, start_id=1
         )
         print(f"Explicit writes => {total_written}")
         _update_firestore_status(project_id, version, "COMPLETE_EXP_REQ")
@@ -480,20 +495,13 @@ def process_requirements_phase_2(request):
         # ------- Step 4: Deduplicate implicit requirements with Gemini
         _update_firestore_status(project_id, version, "PROCESS_IMPLICIT_WITH_GEMINI")
         deduped_implicit = _dedupe_requirements_with_gemini(
-            implicit_candidates,
-            IMPLICIT_PROMPT_TPL,
-            IMPLICIT_SCHEMA,
-            IMPL_BATCH_SIZE
+            implicit_candidates, IMPLICIT_PROMPT_TPL, IMPLICIT_SCHEMA, IMPL_BATCH_SIZE
         )
         print(f"Gemini implicit => {len(deduped_implicit)} requirements.")
 
-        # ------- Step 5: Persist implicit requirements to Firestore
         _update_firestore_status(project_id, version, "WRITE_IMPLICIT_TO_FIRESTORE")
         total_written += _persist_requirements_to_firestore(
-            project_id,
-            version,
-            deduped_implicit,
-            start_id=len(deduped_explicit) + 1
+            project_id, version, deduped_implicit, start_id=len(deduped_explicit) + 1
         )
         print(f"Total writes (explicit+implicit) => {total_written}")
 
@@ -505,8 +513,11 @@ def process_requirements_phase_2(request):
         _update_firestore_status(project_id, version, "ERR_REQ_EXTRACT_P2")
         # Return a more descriptive error message
         return (
-            json.dumps({
-                "status": "error",
-                "message": f"An unexpected error occurred during processing: {str(e)}",
-            }), 500
+            json.dumps(
+                {
+                    "status": "error",
+                    "message": f"An unexpected error occurred during processing: {str(e)}",
+                }
+            ),
+            500,
         )
