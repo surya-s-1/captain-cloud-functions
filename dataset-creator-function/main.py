@@ -19,7 +19,6 @@ storage_client = storage.Client()
 genai_client = genai.Client(http_options=HttpOptions(api_version='v1'))
 
 EXCLUDED_STATES = {
-    'DATASET_GENERATION_STARTED',
     'DATASET_GENERATION_COMPLETED',
 }
 
@@ -33,6 +32,7 @@ def generate_data_schema_and_rules(title, description, acceptance_criteria):
     Given the following software test case, analyze it and extract:
     1. A flat JSON object schema with snake_case field names and simple types: string, integer, number, boolean, or array.
     2. A set of generation rules or constraints for each field whether they are inferred or explicit, write it extremely clearly to guide the data generation to make sense. Also mention what data to give if there is a need for edge cases.
+    3. Instruction to always include expected result PASS or FAIL for each row of data in the dataset with clear instrcutions on how to decide when to PASS or FAIL.
     3. An appropriate number of records to generate that provides full test coverage and realistic variation. Suggest at least 10 records, more if needed for edge cases.
 
     Test Case:
@@ -96,6 +96,7 @@ def generate_synthetic_data(schema_and_rules_and_num):
     {schema_json_string}
 
     The output must be a JSON array of objects.
+    An exprected result, either PASS or FAIL, must be present for every object of data in the JSON array response.
     '''
 
     resp = genai_client.models.generate_content(
@@ -140,7 +141,11 @@ def worker_function(request):
             return ('Skipped', 200)
 
         if testcase.get('dataset_status') in EXCLUDED_STATES:
-            logging.info('Skipping comepleted testcase %s', testcase_id)
+            logging.info('Skipping completed testcase %s', testcase_id)
+            return ('Skipped', 200)
+
+        if testcase.get('datasets'):
+            logging.info('Skipping comeleted testcase %s', testcase_id)
             return ('Skipped', 200)
 
         doc_ref.set(

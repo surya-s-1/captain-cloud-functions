@@ -44,25 +44,27 @@ def process_for_testcases(request):
         logging.info(f'Start orchestration for project={project_id}, version={version}')
 
         firestore_client.document(f'projects/{project_id}/versions/{version}').update(
-            {'status': 'START_TASK_CREATION'}
+            {'status': 'START_TESTCASE_CREATION'}
         )
 
         requirements_ref = firestore_client.collection(
             'projects', project_id, 'versions', version, 'requirements'
         )
 
-        # Filter for requirements that are not deleted and have not been processed
-        query = requirements_ref.where('deleted', '!=', True).where(
-            'status',
-            'not in',
-            [
-                'TESTCASES_CREATION_QUEUED',
-                'TESTCASES_CREATION_STARTED',
-                'TESTCASES_CREATION_COMPLETE',
-            ],
-        )
+        query = requirements_ref.where('deleted', '!=', True)
+        all_requirements = query.get()
 
-        requirements_to_process = query.get()
+        requirements_to_process = []
+        excluded_statuses = [
+            'TESTCASES_CREATION_QUEUED',
+            'TESTCASES_CREATION_STARTED',
+            'TESTCASES_CREATION_COMPLETE',
+        ]
+
+        for doc in all_requirements:
+            doc_data = doc.to_dict()
+            if doc_data.get('status') not in excluded_statuses:
+                requirements_to_process.append(doc)
 
         logging.info(f'Found {len(requirements_to_process)} requirements to enqueue.')
 
@@ -110,4 +112,10 @@ def process_for_testcases(request):
         )
 
     except Exception as e:
+        firestore_client.document(f'projects/{project_id}/versions/{version}').update(
+            {'status': 'CONFIRM_REQ_EXTRACT_RETRY'}
+        )
+
+        logging.exception(e)
+
         return {'error': str(e)}, 500

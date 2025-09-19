@@ -15,7 +15,7 @@ from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 # =====================
 FIRESTORE_DATABASE = os.environ.get('FIRESTORE_DATABASE')
 GENAI_MODEL = os.environ.get('GENAI_MODEL')
-FIRESTORE_COMMIT_CHUNK = os.environ.get('FIRESTORE_COMMIT_CHUNK', 450)
+FIRESTORE_COMMIT_CHUNK = int(os.environ.get('FIRESTORE_COMMIT_CHUNK', '450'))
 
 # =====================
 # Clients
@@ -219,6 +219,14 @@ def generate_test_cases(request):
         _update_requirement_status(
             project_id, version, requirement_id, 'TESTCASES_CREATION_COMPLETE'
         )
+
+        collection_ref = firestore_client.collection('projects', project_id, 'versions', version, 'requirements')
+        requirements = [doc.to_dict() for doc in collection_ref.get() if doc.get('deleted') != True]
+
+        if (len(requirements) == len([req for req in requirements if req.get('status', '') == 'TESTCASES_CREATION_COMPLETE'])):
+            version_ref = firestore_client.document('projects', project_id, 'versions', version)
+            version_ref.update({ 'status': 'CONFIRM_TESTCASES' })
+
 
         return (
             json.dumps(

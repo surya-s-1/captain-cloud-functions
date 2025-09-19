@@ -17,7 +17,7 @@ SCHEMA = {
         'title': {'type': 'string'},
         'description': {'type': 'string'},
         'acceptance_criteria': {'type': 'string'},
-        'priority': {'type': 'string'},
+        'priority': {'type': 'string', 'enum': ['High', 'Medium', 'Low']},
     },
     'required': ['title', 'description', 'acceptance_criteria', 'priority'],
 }
@@ -38,8 +38,9 @@ def update_testcase(request):
         version = data.get('version')
         testcase_id = data.get('testcase_id')
         prompt = data.get('prompt')
+        uid = data.get('uid')
 
-        if not all([project_id, version, testcase_id, prompt]):
+        if not all([project_id, version, testcase_id, prompt, uid]):
             return (
                 json.dumps({'error': 'Missing required parameters.'}),
                 400,
@@ -59,7 +60,9 @@ def update_testcase(request):
         # Prefix the prompt with role instruction
         role_prompt = (
             'You are an expert QA tester specializing in medical software systems. '
-            'Based on the following input, update the testcase details (title, description, acceptance_criteria, priority).\n\n'
+            'Based on the following input, update the testcase details (title, description, acceptance_criteria, priority).'
+            'Make sure to update only what the user asked you to. Kepp the remaining things exactly same.'
+            'Keep description and acceptance criteria always in the markdown format and try to use bullet points when required.\n\n'
             f'{prompt}'
         )
 
@@ -80,6 +83,7 @@ def update_testcase(request):
                 'description': output.get('description'),
                 'acceptance_criteria': output.get('acceptance_criteria'),
                 'priority': output.get('priority'),
+                'last_updated_by': uid
             }
         )
 
