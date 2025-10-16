@@ -647,7 +647,7 @@ def process_requirements_phase_2(request):
 
         dupe_imps, orig_imps = _mark_duplicates(project_id, version, implicit_reqs)
 
-        _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT_P2')
+        _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT')
 
         print(f'Vector Dedupe (Implicit Only) => Marked {len(dupe_imps)} duplicates.')
 
