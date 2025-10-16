@@ -26,12 +26,8 @@ FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
 FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
-EMBEDDING_MODEL = (
-    'text-embedding-004'  # The model used for generating vector embeddings
-)
-EMBEDDING_SIM_THRESHOLD = (
-    0.95  # Cosine similarity threshold for vector deduplication (0.0-1.0)
-)
+EMBEDDING_MODEL = 'text-embedding-004'  # The model used for generating vector embeddings
+EMBEDDING_SIM_THRESHOLD = 0.95  # Cosine similarity threshold for vector deduplication (0.0-1.0)
 GENAI_MODEL = 'gemini-2.5-flash'
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
@@ -113,6 +109,7 @@ def normalize_req_dict(req: Any) -> Any:
     '''
     if not isinstance(req, (dict, list)):
         return req
+
     if isinstance(req, list):
         return [normalize_req_dict(item) for item in req]
 
@@ -120,7 +117,7 @@ def normalize_req_dict(req: Any) -> Any:
     for k, v in req.items():
         # Clean key of surrounding whitespace and quotes
         if isinstance(k, str):
-            clean_key = k.strip().strip(''').strip(''').strip()
+            clean_key = k.strip().strip("'''").strip("'''").strip()
         else:
             clean_key = str(k).strip()
 
@@ -363,9 +360,7 @@ def _load_and_normalize_exp_req(obj_url: str) -> List[Dict[str, Any]]:
 
     final_list = []
     for r in normalized_list:
-        req_text = (
-            r.get('requirement') or r.get('text') or r.get('title') or json.dumps(r)
-        )
+        req_text = r.get('requirement')
 
         final_list.append(
             {
