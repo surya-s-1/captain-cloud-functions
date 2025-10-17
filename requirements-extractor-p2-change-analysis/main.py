@@ -7,6 +7,10 @@ import concurrent.futures as futures
 from urllib.parse import urlparse
 from typing import Any, Dict, Iterator, List, Tuple
 
+# import copy
+# from dotenv import load_dotenv
+# load_dotenv()
+
 import functions_framework
 
 from google import genai
@@ -30,14 +34,13 @@ FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
 EMBEDDING_MODEL = 'text-embedding-004'
 DUPE_SIM_THRESHOLD = 0.95
 REQ_UNCHANGED_SIM_THRESHOLD = 0.95  # Dedup/Exact match: >= 0.95
-REQ_DEPRECATED_SIM_THRESHOLD = (
-    0.65  # Semantic difference: < 0.65 (old text is deprecated)
-)
-REQ_MODIFIED_SIM_THRESHOLD = 0.65  # Change detected: 0.65 <= score < 0.95
+REQ_DEPRECATED_SIM_THRESHOLD = 0.75 # Deprecated: < 0.75
+REQ_MODIFIED_SIM_THRESHOLD = 0.75  # Change detected: 0.75 <= score < 0.95
 
 GENAI_MODEL = 'gemini-2.5-flash'
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
+DISCOVERY_RELEVANCE_THRESHOLD = 0.2
 
 CHANGE_STATUS_NEW = 'NEW'
 CHANGE_STATUS_MODIFIED = 'MODIFIED'
@@ -109,7 +112,7 @@ def _update_firestore_status(project_id: str, version: str, status: str) -> None
     print(f'Status => {status}')
 
 
-def normalize_req_dict(req: Any) -> Any:
+def normalize_requirements(req: Any) -> Any:
     '''
     Recursively normalizes keys in a dictionary (e.g., fixes inconsistent keys like ''requirement'' -> 'requirement').
     If the input is not a dict or list of dicts, it's returned as-is.
@@ -118,7 +121,7 @@ def normalize_req_dict(req: Any) -> Any:
         return req
 
     if isinstance(req, list):
-        return [normalize_req_dict(item) for item in req]
+        return [normalize_requirements(item) for item in req]
 
     fixed = {}
     for k, v in req.items():
@@ -129,7 +132,7 @@ def normalize_req_dict(req: Any) -> Any:
             clean_key = str(k).strip()
 
         # Recursively normalize nested dicts and lists
-        fixed[clean_key] = normalize_req_dict(v)
+        fixed[clean_key] = normalize_requirements(v)
     return fixed
 
 
@@ -246,24 +249,28 @@ def _refine_candidates_parallel(
 @_retry(max_attempts=3)
 def _generate_embedding(text: str) -> List[float]:
     '''Generates a vector embedding for a given text using the GenAI API.'''
-    if not text:
-        return []
+    try:
+        if not text:
+            return []
 
-    # Use the same timeout mechanism as generation calls for safety
-    with futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(
-            lambda: genai_client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=[Content(parts=[Part(text=text)])],
+        # Use the same timeout mechanism as generation calls for safety
+        with futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(
+                lambda: genai_client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=[Content(parts=[Part(text=text)])],
+                )
             )
-        )
-        response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
+            response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
 
-    # The response is a list of ContentEmbedding objects (one per text input).
-    embeddings = response.embeddings
-    if embeddings:
-        return embeddings[0].values
-    return []
+        # The response is a list of ContentEmbedding objects (one per text input).
+        embeddings = response.embeddings
+        if embeddings:
+            return embeddings[0].values
+        return []
+    except Exception as e:
+        logging.exception(f'Embedding generation failed for text: \'{text[:50]}...\'. Error: {e}')
+        return []
 
 
 @_retry(max_attempts=3)
@@ -312,7 +319,9 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
 
     processed.sort(key=lambda x: x['relevance'], reverse=True)
 
-    return [el for el in processed if el['relevance'] > 0.15]
+    print(f'Discovery processed => {len(processed)}')
+
+    return [el for el in processed if el['relevance'] > DISCOVERY_RELEVANCE_THRESHOLD]
 
 
 def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str, Any]]:
@@ -321,11 +330,14 @@ def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str
     '''
     req_text, req_id = req_tuple
     discovery_results = _query_discovery_engine_single(
-        f'Regulations related to: {req_text}'
+        f'Find the regulations and standards and procedures that apply to the following requirement: {req_text}'
     )
-    # Attach the source ID to each result
+
+    print(f'{req_id} => Discovery results => {len(discovery_results)}')
+
     for res in discovery_results:
         res['explicit_requirement_id'] = req_id
+
     return discovery_results
 
 
@@ -347,10 +359,10 @@ def _query_discovery_engine_parallel(
     return all_results
 
 
-def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, Any]]:
+def _load_and_normalize_exp_req(version: str, requirements_p1_url: str) -> List[Dict[str, Any]]:
     print('Starting new explicit requirement processing from GCS...')
 
-    parsed = urlparse(obj_url)
+    parsed = urlparse(requirements_p1_url)
     bucket = storage_client.bucket(parsed.netloc)
     blob = bucket.blob(parsed.path.lstrip('/'))
     explicit_requirements_raw = json.loads(blob.download_as_text())
@@ -358,7 +370,7 @@ def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, An
     if not explicit_requirements_raw:
         raise ValueError('Input data from GCS is empty.')
 
-    normalized_list = normalize_req_dict(explicit_requirements_raw)
+    normalized_list: List[Dict[str, Any]]= normalize_requirements(explicit_requirements_raw)
 
     texts_to_embed = [r.get('requirement', '') for r in normalized_list]
 
@@ -366,8 +378,10 @@ def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, An
         embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
 
     final_list = []
-    for i, r in enumerate(normalized_list):
-        requirement_id = f'{version}-REQ-{i:03d}'
+    for i, (r, embedding_vector) in enumerate(
+        zip(normalized_list, embedding_vectors), start=1
+    ):
+        requirement_id = f'{version}-REQ-E-{i:03d}'
         final_list.append(
             {
                 'requirement': r.get('requirement', ''),
@@ -375,7 +389,7 @@ def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, An
                 'exp_req_ids': [],
                 'sources': r.get('sources', []),
                 'source_type': 'explicit',
-                'embedding': embedding_vectors[i],
+                'embedding': embedding_vector,
                 'requirement_id': requirement_id,
                 'change_analysis_status': 'NEW',  # Initial status
             }
@@ -409,8 +423,8 @@ def _load_existing_requirements(project_id: str, version: str) -> List[Dict[str,
             existing_reqs.append(
                 {
                     'requirement_id': data.get('requirement_id'),
-                    'requirement': data['requirement'],
-                    'embedding': data['embedding'],
+                    'requirement': data.get('requirement'),
+                    'embedding': data.get('embedding'),
                     'source_type': data.get('source_type'),
                     'exp_req_ids': data.get('exp_req_ids', []),
                 }
@@ -421,13 +435,13 @@ def _load_existing_requirements(project_id: str, version: str) -> List[Dict[str,
 
 
 def _mark_new_reqs_change_status(
-    new_reqs: List[Dict[str, Any]], existing_exp_reqs: List[Dict[str, Any]]
+    new_exp_reqs: List[Dict[str, Any]], existing_exp_reqs: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    print(f'Starting change detection for {len(new_reqs)} new texts...')
+    print(f'Starting change detection for {len(new_exp_reqs)} new texts...')
 
     old_ids_checked = set()
 
-    for new_req in new_reqs:
+    for new_req in new_exp_reqs:
         best_match = None
         max_sim_score = -1.0
 
@@ -458,9 +472,9 @@ def _mark_new_reqs_change_status(
             new_req['change_analysis_near_duplicate_id'] = None
 
     print(
-        f"Statuses: UNCHANGED={len([r for r in new_reqs if r['change_analysis_status'] == 'UNCHANGED'])}, "
-        f"MODIFIED={len([r for r in new_reqs if r['change_analysis_status'] == 'MODIFIED'])}, "
-        f"NEW={len([r for r in new_reqs if r['change_analysis_status'] == 'NEW'])}"
+        f'Statuses: UNCHANGED={len([r for r in new_exp_reqs if r['change_analysis_status'] == 'UNCHANGED'])}, '
+        f'MODIFIED={len([r for r in new_exp_reqs if r['change_analysis_status'] == 'MODIFIED'])}, '
+        f'NEW={len([r for r in new_exp_reqs if r['change_analysis_status'] == 'NEW'])}'
     )
 
     # Filter existing requirements to only include those that were NOT matched
@@ -470,7 +484,7 @@ def _mark_new_reqs_change_status(
         if r['requirement_id'] not in old_ids_checked and r['source_type'] == 'explicit'
     ]
 
-    return new_reqs, old_exp_to_check
+    return new_exp_reqs, old_exp_to_check
 
 
 def _mark_old_reqs_deprecated(
@@ -481,31 +495,34 @@ def _mark_old_reqs_deprecated(
     to determine if they are DEPRECATED.
     '''
     deprecated_ids = []
-    new_exp_reqs = [
-        r for r in new_reqs if r['change_analysis_status'] != CHANGE_STATUS_UNCHANGED
-    ]
+    # new_exp_reqs = [
+    #     r for r in new_reqs if r['change_analysis_status'] != CHANGE_STATUS_UNCHANGED
+    # ]
 
-    if not new_exp_reqs:
-        return []
+    # if not new_exp_reqs:
+    #     return []
 
     print(
         f'Starting deprecation check for {len(old_reqs_to_check)} old explicit texts...'
     )
 
     for old_req in old_reqs_to_check:
-        max_sim_score = -1.0
+        # max_sim_score = -1.0
 
-        # Find the best match among the new requirements
-        for new_req in new_exp_reqs:
-            sim_score = cosine_similarity(old_req['embedding'], new_req['embedding'])
-            if sim_score > max_sim_score:
-                max_sim_score = sim_score
+        # # Find the best match among the new requirements
+        # for new_req in new_exp_reqs:
+        #     sim_score = cosine_similarity(old_req['embedding'], new_req['embedding'])
+        #     if sim_score > max_sim_score:
+        #         max_sim_score = sim_score
 
-        # If the best match is below the deprecation threshold, the old requirement is obsolete.
-        if max_sim_score < REQ_DEPRECATED_SIM_THRESHOLD:
-            deprecated_ids.append(old_req['requirement_id'])
+        # # If the best match is below the deprecation threshold, the old requirement is obsolete.
+        # if max_sim_score < REQ_DEPRECATED_SIM_THRESHOLD:
+        #     deprecated_ids.append(old_req['requirement_id'])
+        if old_req.get('requirement_id', ''):
+            deprecated_ids.append(old_req.get('requirement_id'))
 
     print(f'Marking {len(deprecated_ids)} old explicit requirements as DEPRECATED.')
+    
     return deprecated_ids
 
 
@@ -533,7 +550,7 @@ def _mark_firestore_updates(
             },
         )
 
-    # 1. Mark deprecated implicit requirements
+    # 2. Mark deprecated implicit requirements
     for req in existing_all_reqs:
         if req.get('source_type', None) == 'implicit':
             # Get all currently non-deprecated explicit IDs linked to this implicit one
@@ -567,24 +584,29 @@ def _format_discovery_results(
     and setting 'source_type' to 'implicit'.
     '''
     formatted_list = []
-    for res in discovery_results:
-        # Use the refined text (overwritten into 'snippet' and 'content') as the primary requirement text
-        req_text = res.get('snippet', res.get('content'))
 
-        # Extract and format the explicit source ID
+    texts_to_embed = [res.get('snippet', res.get('content')) for res in discovery_results]
+
+    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
+
+    for i, (res, embedding_vector) in enumerate(
+        zip(discovery_results, embedding_vectors)
+    ):
+        req_text = res.get('snippet', res.get('content'))
         explicit_requirement_id = res.pop('explicit_requirement_id', None)
 
-        # Structure the result into the expected persistence format
         formatted_list.append(
             {
-                'requirement': req_text,  # REFINED TEXT
+                'requirement': req_text,
                 'requirement_type': 'regulation',
+                'embedding': embedding_vector,
                 'exp_req_ids': (
                     [explicit_requirement_id] if explicit_requirement_id else []
-                ),  # Store the explicit req ID(s) that led to its creation
-                'source_type': 'implicit',  # Mark as implicit
-                'deleted': False,  # New requirements are not deleted
-                'duplicate': False,  # To be determined later
+                ),
+                'source_type': 'implicit',
+                'deleted': False,
+                'duplicate': False,
                 'regulations': [
                     {
                         'regulation': res.get('regulation', 'N/A'),
@@ -607,7 +629,7 @@ def _format_discovery_results(
 def _persist_requirements_to_firestore(
     project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int = 1
 ) -> List[Dict[str, Any]]:
-    print(f'Persisting {len(requirements)} requirements starting from ID {start_id}...')
+    print(f'Persisting {len(requirements)} requirements to firestore...')
 
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
@@ -628,7 +650,7 @@ def _persist_requirements_to_firestore(
             doc_data = {**req, 'created_at': firestore.SERVER_TIMESTAMP}
 
             req_id = (
-                f'{version}-REQ-{current_index:03d}'
+                f'{version}-REQ-I-{current_index:03d}'
                 if not req.get('requirement_id')
                 else req.get('requirement_id')
             )
@@ -649,7 +671,7 @@ def _persist_requirements_to_firestore(
             # Case 2: EXPLICIT NEW (New insertions)
             if req_change_status == CHANGE_STATUS_NEW:
                 req_id = (
-                    f'{version}-REQ-{current_index:03d}'
+                    f'{version}-REQ-E-{current_index:03d}'
                     if not req.get('requirement_id')
                     else req.get('requirement_id')
                 )
@@ -688,16 +710,16 @@ def _persist_requirements_to_firestore(
 
             else:
                 print(
-                    f"WARNING: Explicit requirement skipped due to unknown status '{req_change_status}' or missing 'change_analysis_near_duplicate_id'."
+                    f'WARNING: Explicit requirement skipped due to unknown status \'{req_change_status}\' or missing \'change_analysis_near_duplicate_id\'.'
                 )
                 continue
 
         written_reqs.append(
             {
-                'requirement_id': req['requirement_id'],
+                'requirement_id': req.get('requirement_id'),
                 'source_type': req_source_type,
-                'requirement': req['requirement'],
-                'embedding': req['embedding'],
+                'requirement': req.get('requirement', ''),
+                'embedding': req.get('embedding', []),
                 'duplicate': req.get('duplicate', False),
                 'exp_req_ids': req.get('exp_req_ids', []),
                 'change_analysis_near_duplicate_id': req.get(
@@ -708,11 +730,11 @@ def _persist_requirements_to_firestore(
         )
 
     if doc_insertions_tuples_list:
-        print(f"Committing {len(doc_insertions_tuples_list)} INSERT/SET operations...")
+        print(f'Committing {len(doc_insertions_tuples_list)} INSERT/SET operations...')
         _firestore_commit_many(doc_insertions_tuples_list)
 
     if doc_updates_tuples_list:
-        print(f"Committing {len(doc_updates_tuples_list)} UPDATE operations...")
+        print(f'Committing {len(doc_updates_tuples_list)} UPDATE operations...')
         # NOTE: Updates cannot use _firestore_commit_many (which uses batch.set).
         # They must be committed with batch.update().
         batch = firestore_client.batch()
@@ -826,6 +848,13 @@ def _mark_duplicates(
 
     return all_duplicates, all_originals
 
+# def print_array_reqs(msg: str, inp: List[Dict[str, Any]]):
+#     a = []
+#     for r in copy.deepcopy(inp):
+#         r.pop('embedding', None)
+#         a.append(r)
+
+#     print(msg, a)
 
 # =====================
 # Main HTTP Function
@@ -842,6 +871,11 @@ def process_requirements_phase_2_change_analysis(request):
 
     try:
         payload = request.get_json(silent=True) or {}
+        # payload = {
+        #     'project_id': 'abc',
+        #     'version': 'v2',
+        #     'requirements_p1_url': 'gs://genai-sage/projects/abc/v_v2/extractions/requirements-phase-1.json',
+        # }
         project_id = payload.get('project_id')
         version = payload.get('version')
         reqs_url = payload.get('requirements_p1_url')
@@ -866,7 +900,7 @@ def process_requirements_phase_2_change_analysis(request):
 
         print(f'Loaded {len(existing_exp_reqs)} existing explicit requirements.')
 
-        new_exp_reqs = _load_and_normalize_exp_req(reqs_url)
+        new_exp_reqs = _load_and_normalize_exp_req(version, reqs_url)
 
         _update_firestore_status(project_id, version, 'START_CHANGE_DETECTION')
 
@@ -948,3 +982,5 @@ def process_requirements_phase_2_change_analysis(request):
             ),
             500,
         )
+
+process_requirements_phase_2_change_analysis()
