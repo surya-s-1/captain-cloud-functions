@@ -1,3 +1,6 @@
+## If a requirement change status is UNCHANGED, need to update all its implicit reqs as UNCHANGED as well
+## Also we can probably update duplicate ones change status as IGNORED in both previous p2 and this?
+
 import os
 import json
 import time
