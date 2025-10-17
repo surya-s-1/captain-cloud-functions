@@ -398,8 +398,8 @@ def _load_existing_requirements(project_id: str, version: str) -> List[Dict[str,
             'projects', project_id, 'versions', version, 'requirements'
         )
         .where('deleted', '==', False)
+        .where('duplicate', '==', False)
         .where('change_analysis_status', '!=', CHANGE_STATUS_DEPRECATED)
-        .where('is_duplicate', '==', False)
     )
 
     existing_reqs = []
@@ -445,17 +445,17 @@ def _mark_new_reqs_change_status(
 
         if max_sim_score >= REQ_UNCHANGED_SIM_THRESHOLD:
             new_req['change_analysis_status'] = CHANGE_STATUS_UNCHANGED
-            new_req['change_analysis_original_id'] = best_match['requirement_id']
+            new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
             old_ids_checked.add(best_match['requirement_id'])
 
         elif max_sim_score >= REQ_MODIFIED_SIM_THRESHOLD:
             new_req['change_analysis_status'] = CHANGE_STATUS_MODIFIED
-            new_req['change_analysis_original_id'] = best_match['requirement_id']
+            new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
             old_ids_checked.add(best_match['requirement_id'])
 
         else:
             new_req['change_analysis_status'] = CHANGE_STATUS_NEW
-            new_req['change_analysis_original_id'] = None
+            new_req['change_analysis_near_duplicate_id'] = None
 
     print(
         f"Statuses: UNCHANGED={len([r for r in new_reqs if r['change_analysis_status'] == 'UNCHANGED'])}, "
@@ -584,7 +584,7 @@ def _format_discovery_results(
                 ),  # Store the explicit req ID(s) that led to its creation
                 'source_type': 'implicit',  # Mark as implicit
                 'deleted': False,  # New requirements are not deleted
-                'is_duplicate': False,  # To be determined later
+                'duplicate': False,  # To be determined later
                 'regulations': [
                     {
                         'regulation': res.get('regulation', 'N/A'),
@@ -646,7 +646,7 @@ def _persist_requirements_to_firestore(
             req['requirement_id'] = req_id
 
         elif req_source_type == 'explicit':
-            change_analysis_original_id = req.get('change_analysis_original_id', '')
+            change_analysis_near_duplicate_id = req.get('change_analysis_near_duplicate_id', '')
 
             # Case 2: EXPLICIT NEW (New insertions)
             if req_change_status == CHANGE_STATUS_NEW:
@@ -668,9 +668,9 @@ def _persist_requirements_to_firestore(
             # Case 3: EXPLICIT MODIFIED/UNCHANGED (Update existing document)
             elif (
                 req_change_status in (CHANGE_STATUS_MODIFIED, CHANGE_STATUS_UNCHANGED)
-                and change_analysis_original_id
+                and change_analysis_near_duplicate_id
             ):
-                req_id = change_analysis_original_id
+                req_id = change_analysis_near_duplicate_id
                 doc_data['requirement_id'] = req_id
                 doc_data['testcase_status'] = '' if req_change_status == CHANGE_STATUS_MODIFIED else req.get('testcase_status', '')
 
@@ -681,7 +681,7 @@ def _persist_requirements_to_firestore(
 
             else:
                 print(
-                    f"WARNING: Explicit requirement skipped due to unknown status '{req_change_status}' or missing 'change_analysis_original_id'."
+                    f"WARNING: Explicit requirement skipped due to unknown status '{req_change_status}' or missing 'change_analysis_near_duplicate_id'."
                 )
                 continue
 
@@ -689,10 +689,10 @@ def _persist_requirements_to_firestore(
             {
                 'requirement_id': req['requirement_id'],
                 'embedding': req['embedding'],
-                'is_duplicate': req.get('is_duplicate', False),
+                'duplicate': req.get('duplicate', False),
                 'exp_req_ids': req.get('exp_req_ids', []),
                 'source_type': req_source_type,
-                'change_analysis_original_id': req.get('change_analysis_original_id', ''),
+                'change_analysis_near_duplicate_id': req.get('change_analysis_near_duplicate_id', ''),
                 'change_analysis_status': req_change_status,
             }
         )
@@ -714,10 +714,10 @@ def _persist_requirements_to_firestore(
                 'embedding': data.get('embedding', []),
                 'requirement_type': data.get('requirement_type', ''),
                 'deleted': data.get('deleted', False),
-                'is_duplicate': data.get('is_duplicate', False),
+                'duplicate': data.get('duplicate', False),
                 'change_analysis_status': data.get('change_analysis_status', ''),
-                'change_analysis_original_id': data.get(
-                    'change_analysis_original_id', ''
+                'change_analysis_near_duplicate_id': data.get(
+                    'change_analysis_near_duplicate_id', ''
                 ),
                 'deprecation_reason': data.get('deprecation_reason', ''),
                 'sources': data.get('sources', []),
@@ -742,7 +742,7 @@ def _mark_duplicates(
     This function is used for both explicit and implicit deduplication.
     '''
 
-    # Stores (duplicate_id, original_id, duplicate_source_ids_to_merge)
+    # Stores (duplicate_id, near_duplicate_id, duplicate_source_ids_to_merge)
     duplicates_to_update: List[Tuple[str, str, List[str]]] = []
 
     # Iterate through each requirement (i)
@@ -754,7 +754,7 @@ def _mark_duplicates(
             req_j = requirements[j]
 
             # Skip comparing against a requirement that has already been marked as a duplicate.
-            if req_j.get('is_duplicate', False):
+            if req_j.get('duplicate', False):
                 continue
 
             similarity = cosine_similarity(req_i['embedding'], req_j['embedding'])
@@ -772,7 +772,7 @@ def _mark_duplicates(
 
                 # Mark locally to prevent req_i from being a original source for future items
                 # Once a match is found, we mark it and move to the next req_i
-                req_i['is_duplicate'] = True
+                req_i['duplicate'] = True
                 break
 
     if not duplicates_to_update:
@@ -783,12 +783,12 @@ def _mark_duplicates(
 
     batch = firestore_client.batch()
 
-    for req_id, original_id, exp_req_ids in duplicates_to_update:
+    for req_id, near_duplicate_id, exp_req_ids in duplicates_to_update:
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
 
-        batch.update(doc_ref, {'is_duplicate': True, 'original_id': original_id})
+        batch.update(doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id})
 
         # Only merge source IDs if the duplicate is an explicit requirement
         if exp_req_ids and req_i['source_type'] == 'explicit':
@@ -798,7 +798,7 @@ def _mark_duplicates(
                 'versions',
                 version,
                 'requirements',
-                original_id,
+                near_duplicate_id,
             )
 
             batch.update(
@@ -812,7 +812,7 @@ def _mark_duplicates(
     all_originals: List[Dict[str, Any]] = []
 
     for req in requirements:
-        if req.get('is_duplicate', False):
+        if req.get('duplicate', False):
             all_duplicates.append(req)
         else:
             all_originals.append(req)
