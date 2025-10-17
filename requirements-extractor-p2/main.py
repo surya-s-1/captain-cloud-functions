@@ -452,7 +452,8 @@ def _persist_requirements_to_firestore(
     for i, (req, embedding_vector) in enumerate(
         zip(requirements, embedding_vectors), start=start_id
     ):
-        req_id = f'{version}-REQ-{i:03d}'
+        req_source_type: str = req.get('source_type', 'unknown')
+        req_id = f'{version}-REQ-{req_source_type[0].upper()}-{i:03d}'
 
         doc_data = {
             'requirement_id': req_id,
