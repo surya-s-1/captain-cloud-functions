@@ -449,7 +449,6 @@ def _persist_requirements_to_firestore(
             'embedding': embedding_vector,
             'source_type': req.get('source_type', ''),
             'requirement': req.get('requirement', ''),
-            'embedding': req.get('embedding', []),
             'requirement_type': req.get('requirement_type', ''),
             'deleted': req.get('deleted', False),
             'duplicate': req.get('duplicate', False),  # Initialize to False
