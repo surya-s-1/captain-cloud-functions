@@ -613,8 +613,8 @@ def _persist_requirements_to_firestore(
         'projects', project_id, 'versions', version, 'requirements'
     )
 
-    doc_insertions_tuples_list = []  # Stores (DocumentReference, Data) for batch operations
-    doc_updates_tuples_list = []  # Stores (DocumentReference, Data) for update operations
+    doc_insertions_tuples_list = []
+    doc_updates_tuples_list = []
     written_reqs = []
 
     current_index = start_id
@@ -623,14 +623,10 @@ def _persist_requirements_to_firestore(
         req_source_type = req.get('source_type', '')
         req_change_status = req.get('change_analysis_status', 'NEW')
 
-        doc_data = {
-            **req,
-            'created_at': firestore.SERVER_TIMESTAMP
-        }
-        doc_data.pop('temp_id', None)
-
         # Case 1: IMPLICIT (Always new insertions)
         if req_source_type == 'implicit':
+            doc_data = {**req, 'created_at': firestore.SERVER_TIMESTAMP}
+
             req_id = (
                 f'{version}-REQ-{current_index:03d}'
                 if not req.get('requirement_id')
@@ -646,7 +642,9 @@ def _persist_requirements_to_firestore(
             req['requirement_id'] = req_id
 
         elif req_source_type == 'explicit':
-            change_analysis_near_duplicate_id = req.get('change_analysis_near_duplicate_id', '')
+            change_analysis_near_duplicate_id = req.get(
+                'change_analysis_near_duplicate_id', ''
+            )
 
             # Case 2: EXPLICIT NEW (New insertions)
             if req_change_status == CHANGE_STATUS_NEW:
@@ -655,6 +653,9 @@ def _persist_requirements_to_firestore(
                     if not req.get('requirement_id')
                     else req.get('requirement_id')
                 )
+
+                doc_data = {**req, 'created_at': firestore.SERVER_TIMESTAMP}
+
                 doc_data['requirement_id'] = req_id
                 doc_data['testcase_status'] = ''
 
@@ -670,9 +671,15 @@ def _persist_requirements_to_firestore(
                 req_change_status in (CHANGE_STATUS_MODIFIED, CHANGE_STATUS_UNCHANGED)
                 and change_analysis_near_duplicate_id
             ):
+                doc_data = { **req }
+
                 req_id = change_analysis_near_duplicate_id
                 doc_data['requirement_id'] = req_id
-                doc_data['testcase_status'] = '' if req_change_status == CHANGE_STATUS_MODIFIED else req.get('testcase_status', '')
+                doc_data['testcase_status'] = (
+                    ''
+                    if req_change_status == CHANGE_STATUS_MODIFIED
+                    else req.get('testcase_status', '')
+                )
 
                 doc_ref = requirements_collection_ref.document(req_id)
                 doc_updates_tuples_list.append((doc_ref, doc_data))
@@ -688,11 +695,14 @@ def _persist_requirements_to_firestore(
         written_reqs.append(
             {
                 'requirement_id': req['requirement_id'],
+                'source_type': req_source_type,
+                'requirement': req['requirement'],
                 'embedding': req['embedding'],
                 'duplicate': req.get('duplicate', False),
                 'exp_req_ids': req.get('exp_req_ids', []),
-                'source_type': req_source_type,
-                'change_analysis_near_duplicate_id': req.get('change_analysis_near_duplicate_id', ''),
+                'change_analysis_near_duplicate_id': req.get(
+                    'change_analysis_near_duplicate_id', ''
+                ),
                 'change_analysis_status': req_change_status,
             }
         )
@@ -708,8 +718,6 @@ def _persist_requirements_to_firestore(
         batch = firestore_client.batch()
         for doc_ref, data in doc_updates_tuples_list:
             update_data = {
-                'requirement_id': data.get('requirement_id', ''),
-                'source_type': data.get('source_type', ''),
                 'requirement': data.get('requirement', ''),
                 'embedding': data.get('embedding', []),
                 'requirement_type': data.get('requirement_type', ''),
@@ -721,11 +729,8 @@ def _persist_requirements_to_firestore(
                 ),
                 'deprecation_reason': data.get('deprecation_reason', ''),
                 'sources': data.get('sources', []),
-                'regulations': data.get('regulations', []),
-                'exp_req_ids': data.get('exp_req_ids', []),
                 'testcase_status': data.get('testcase_status', ''),
                 'updated_at': firestore.SERVER_TIMESTAMP,
-                'created_at': data.get('created_at', firestore.SERVER_TIMESTAMP),
             }
 
             batch.update(doc_ref, update_data)
@@ -788,7 +793,9 @@ def _mark_duplicates(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
 
-        batch.update(doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id})
+        batch.update(
+            doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id}
+        )
 
         # Only merge source IDs if the duplicate is an explicit requirement
         if exp_req_ids and req_i['source_type'] == 'explicit':
@@ -879,16 +886,18 @@ def process_requirements_phase_2_change_analysis(request):
 
         _update_firestore_status(project_id, version, 'START_STORE_EXPLICIT')
 
-        persisted_new_exp_reqs = _persist_requirements_to_firestore(
+        new_exp_reqs = _persist_requirements_to_firestore(
             project_id, version, new_exp_reqs
         )
 
-        print(f'New/Modified/Unchanged Explicit writes => {len(persisted_new_exp_reqs)}')
+        print(
+            f'New/Modified/Unchanged New Explicit writes => {len(new_exp_reqs)}'
+        )
 
         _update_firestore_status(project_id, version, 'START_DEDUPE_EXPLICIT')
 
         dupe_exps, orig_exps = _mark_duplicates(
-            project_id, version, persisted_new_exp_reqs
+            project_id, version, new_exp_reqs
         )
 
         print(f'Dedupe => Marked {len(dupe_exps)} new explicit duplicates.')
@@ -909,7 +918,7 @@ def process_requirements_phase_2_change_analysis(request):
             project_id,
             version,
             implicit_reqs,
-            start_id=len(persisted_new_exp_reqs),
+            start_id=len(new_exp_reqs),
         )
 
         _update_firestore_status(project_id, version, 'START_DEDUPE_IMPLICIT')
