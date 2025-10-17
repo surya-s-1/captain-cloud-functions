@@ -34,6 +34,7 @@ DUPLICATE_SIM_THRESHOLD = 0.95
 GENAI_MODEL = 'gemini-2.5-flash'
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
+DISCOVERY_RELEVANCE_THRESHOLD = 0.2
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
@@ -313,7 +314,7 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
 
     processed.sort(key=lambda x: x['relevance'], reverse=True)
 
-    return [el for el in processed if el['relevance'] > 0.15]
+    return [el for el in processed if el['relevance'] > DISCOVERY_RELEVANCE_THRESHOLD]
 
 
 def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str, Any]]:
