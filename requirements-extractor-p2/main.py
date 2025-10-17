@@ -26,8 +26,8 @@ FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
 FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
-EMBEDDING_MODEL = 'text-embedding-004'  # The model used for generating vector embeddings
-EMBEDDING_SIM_THRESHOLD = 0.95  # Cosine similarity threshold for vector deduplication (0.0-1.0)
+EMBEDDING_MODEL = 'text-embedding-004'
+DUPLICATE_SIM_THRESHOLD = 0.95
 GENAI_MODEL = 'gemini-2.5-flash'
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
@@ -422,7 +422,7 @@ def _format_discovery_results(
 
 
 def _persist_requirements_to_firestore(
-    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int
+    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int = 1
 ) -> List[Dict[str, Any]]:
 
     print(f'Generating embeddings for {len(requirements)} requirements...')
@@ -445,11 +445,22 @@ def _persist_requirements_to_firestore(
         req_id = f'{version}-REQ-{i:03d}'
 
         doc_data = {
-            **req,
             'requirement_id': req_id,
             'embedding': embedding_vector,
-            'deleted': False,
-            'is_duplicate': False,  # Initialize to False
+            'source_type': req.get('source_type', ''),
+            'requirement': req.get('requirement', ''),
+            'embedding': req.get('embedding', []),
+            'requirement_type': req.get('requirement_type', ''),
+            'deleted': req.get('deleted', False),
+            'duplicate': req.get('duplicate', False),  # Initialize to False
+            'change_analysis_status': req.get('change_analysis_status', ''),
+            'change_analysis_near_duplicate_id': req.get('change_analysis_near_duplicate_id', ''),
+            'deprecation_reason': req.get('deprecation_reason', ''),
+            'sources': req.get('sources', []),
+            'regulations': req.get('regulations', []),
+            'exp_req_ids': req.get('exp_req_ids', []),
+            'testcase_status': req.get('testcase_status', ''),
+            'updated_at': firestore.SERVER_TIMESTAMP,
             'created_at': firestore.SERVER_TIMESTAMP,
         }
 
@@ -462,11 +473,11 @@ def _persist_requirements_to_firestore(
 
         written_reqs.append(
             {
-                'requirement_id': req_id,
-                'embedding': embedding_vector,
-                'is_duplicate': False,
-                'exp_req_ids': req.get('exp_req_ids', []),
-                'source_type': req.get('source_type'),
+                'requirement_id': doc_data['requirement_id'],
+                'embedding': doc_data['embedding'],
+                'duplicate': doc_data['duplicate'],
+                'exp_req_ids': doc_data['exp_req_ids'],
+                'source_type': doc_data['source_type'],
             }
         )
 
@@ -487,7 +498,7 @@ def _mark_duplicates(
     the requirement with the lower index (i.e., appearing earlier) is the original one.
     '''
 
-    # Stores (duplicate_id, original_id, duplicate_source_ids_to_merge)
+    # Stores (duplicate_id, near_duplicate_id, duplicate_source_ids_to_merge)
     duplicates_to_update: List[Tuple[str, str, List[str]]] = []
 
     # Iterate through each requirement (i)
@@ -499,12 +510,12 @@ def _mark_duplicates(
             req_j = requirements[j]
 
             # Skip comparing against a requirement that has already been marked as a duplicate.
-            if req_j.get('is_duplicate'):
+            if req_j.get('duplicate'):
                 continue
 
             similarity = cosine_similarity(req_i['embedding'], req_j['embedding'])
 
-            if similarity >= EMBEDDING_SIM_THRESHOLD:
+            if similarity >= DUPLICATE_SIM_THRESHOLD:
                 # req_i is a duplicate of req_j (the earlier one is the original one)
                 # Store the IDs and the source IDs from the duplicate req_i to be merged
                 duplicates_to_update.append(
@@ -517,7 +528,7 @@ def _mark_duplicates(
 
                 # Mark locally to prevent req_i from being a original source for future items
                 # Once a match is found, we mark it and move to the next req_i
-                req_i['is_duplicate'] = True
+                req_i['duplicate'] = True
                 break
 
     if not duplicates_to_update:
@@ -528,12 +539,12 @@ def _mark_duplicates(
 
     batch = firestore_client.batch()
 
-    for req_id, original_id, exp_req_ids in duplicates_to_update:
+    for req_id, near_duplicate_id, exp_req_ids in duplicates_to_update:
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
 
-        batch.update(doc_ref, {'is_duplicate': True, 'original_id': original_id})
+        batch.update(doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id})
 
         if exp_req_ids:
             original_ref = firestore_client.document(
@@ -542,7 +553,7 @@ def _mark_duplicates(
                 'versions',
                 version,
                 'requirements',
-                original_id,
+                near_duplicate_id,
             )
 
             batch.update(
@@ -556,7 +567,7 @@ def _mark_duplicates(
     all_originals: List[Dict[str, Any]] = []
 
     for req in requirements:
-        if req.get('is_duplicate', False):
+        if req.get('duplicate', False):
             all_duplicates.append(req)
         else:
             all_originals.append(req)
@@ -608,7 +619,7 @@ def process_requirements_phase_2(request):
         _update_firestore_status(project_id, version, 'START_STORE_EXPLICIT')
 
         explicit_reqs = _persist_requirements_to_firestore(
-            project_id, version, requirements=normalised_reqs, start_id=1
+            project_id, version, normalised_reqs
         )
 
         print(f'Explicit writes => {len(explicit_reqs)}')
@@ -635,7 +646,7 @@ def process_requirements_phase_2(request):
             project_id,
             version,
             implicit_reqs,
-            start_id=len(explicit_reqs) + 1,
+            len(explicit_reqs) + 1,
         )
 
         _update_firestore_status(project_id, version, 'START_DEDUPE_IMPLICIT')
