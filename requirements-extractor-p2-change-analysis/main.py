@@ -26,11 +26,23 @@ FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
 FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
-EMBEDDING_MODEL = 'text-embedding-004'  # The model used for generating vector embeddings
-EMBEDDING_SIM_THRESHOLD = 0.95  # Cosine similarity threshold for vector deduplication (0.0-1.0)
+
+EMBEDDING_MODEL = 'text-embedding-004'
+DUPE_SIM_THRESHOLD = 0.95
+REQ_UNCHANGED_SIM_THRESHOLD = 0.95  # Dedup/Exact match: >= 0.95
+REQ_DEPRECATED_SIM_THRESHOLD = (
+    0.65  # Semantic difference: < 0.65 (old text is deprecated)
+)
+REQ_MODIFIED_SIM_THRESHOLD = 0.65  # Change detected: 0.65 <= score < 0.95
+
 GENAI_MODEL = 'gemini-2.5-flash'
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
+
+CHANGE_STATUS_NEW = 'NEW'
+CHANGE_STATUS_MODIFIED = 'MODIFIED'
+CHANGE_STATUS_UNCHANGED = 'UNCHANGED'
+CHANGE_STATUS_DEPRECATED = 'DEPRECATED'
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
@@ -68,11 +80,6 @@ logging.getLogger('google.genai').setLevel(logging.WARNING)
 
 
 def _retry(max_attempts: int = 3, base_delay: float = 0.5):
-    '''
-    A decorator with exponential backoff and jitter for retrying transient errors.
-    This helps to handle API rate limits and network issues gracefully.
-    '''
-
     def deco(fn):
         @functools.wraps(fn)
         def wrapper(*args, **kwargs):
@@ -166,10 +173,6 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
 
 @_retry(max_attempts=3)
 def _genai_json_call(model: str, prompt: str, schema: dict) -> list:
-    '''
-    Calls Gemini with a schema and returns the parsed JSON.
-    Includes a timeout and retry logic for resilience.
-    '''
     with futures.ThreadPoolExecutor(max_workers=1) as ex:
         future = ex.submit(
             lambda: genai_client.models.generate_content(
@@ -187,7 +190,6 @@ def _genai_json_call(model: str, prompt: str, schema: dict) -> list:
 
 @_retry(max_attempts=3)
 def _refine_requirement_with_gemini(text: str) -> str:
-    '''Refines a raw text snippet into an objective requirement using Gemini.'''
     if not text:
         return ''
 
@@ -345,8 +347,8 @@ def _query_discovery_engine_parallel(
     return all_results
 
 
-def _load_and_normalize_exp_req(obj_url: str) -> List[Dict[str, Any]]:
-    print('Starting explicit requirement processing...')
+def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, Any]]:
+    print('Starting new explicit requirement processing from GCS...')
 
     parsed = urlparse(obj_url)
     bucket = storage_client.bucket(parsed.netloc)
@@ -358,23 +360,202 @@ def _load_and_normalize_exp_req(obj_url: str) -> List[Dict[str, Any]]:
 
     normalized_list = normalize_req_dict(explicit_requirements_raw)
 
-    final_list = []
-    for r in normalized_list:
-        req_text = r.get('requirement')
+    texts_to_embed = [r.get('requirement', '') for r in normalized_list]
 
+    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
+
+    final_list = []
+    for i, r in enumerate(normalized_list):
+        requirement_id = f'{version}-REQ-{i:03d}'
         final_list.append(
             {
-                'requirement': req_text,
+                'requirement': r.get('requirement', ''),
                 'requirement_type': r.get('requirement_type', 'functional'),
                 'exp_req_ids': [],
                 'sources': r.get('sources', []),
-                'source_type': 'explicit',  # Mark as explicit
+                'source_type': 'explicit',
+                'embedding': embedding_vectors[i],
+                'requirement_id': requirement_id,
+                'change_analysis_status': 'NEW',  # Initial status
             }
         )
 
-    print(f'Loaded and normalized {len(final_list)} explicit requirements.')
+    print(f'Loaded, normalized, and embedded {len(final_list)} explicit requirements.')
 
     return final_list
+
+
+def _load_existing_requirements(project_id: str, version: str) -> List[Dict[str, Any]]:
+    '''
+    Loads all *existing*, non-deleted, non-duplicate explicit and implicit requirements
+    from the current Firestore version.
+    '''
+    print('Loading existing requirements from Firestore for change detection...')
+
+    query = (
+        firestore_client.collection(
+            'projects', project_id, 'versions', version, 'requirements'
+        )
+        .where('deleted', '==', False)
+        .where('change_analysis_status', '!=', CHANGE_STATUS_DEPRECATED)
+        .where('is_duplicate', '==', False)
+    )
+
+    existing_reqs = []
+    for doc in query.stream():
+        data = doc.to_dict()
+        if 'requirement' in data and 'embedding' in data:
+            existing_reqs.append(
+                {
+                    'requirement_id': data.get('requirement_id'),
+                    'requirement': data['requirement'],
+                    'embedding': data['embedding'],
+                    'source_type': data.get('source_type'),
+                    'exp_req_ids': data.get('exp_req_ids', []),
+                }
+            )
+
+    print(f'Loaded {len(existing_reqs)} existing requirements.')
+    return existing_reqs
+
+
+def _mark_new_reqs_change_status(
+    new_reqs: List[Dict[str, Any]], existing_exp_reqs: List[Dict[str, Any]]
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    print(f'Starting change detection for {len(new_reqs)} new texts...')
+
+    old_ids_checked = set()
+
+    for new_req in new_reqs:
+        best_match = None
+        max_sim_score = -1.0
+
+        # Find the best match among existing explicit requirements
+        for old_req in existing_exp_reqs:
+            # Only check explicit against explicit
+            if old_req['source_type'] != 'explicit':
+                continue
+
+            sim_score = cosine_similarity(new_req['embedding'], old_req['embedding'])
+
+            if sim_score > max_sim_score:
+                max_sim_score = sim_score
+                best_match = old_req
+
+        if max_sim_score >= REQ_UNCHANGED_SIM_THRESHOLD:
+            new_req['change_analysis_status'] = CHANGE_STATUS_UNCHANGED
+            new_req['change_analysis_original_id'] = best_match['requirement_id']
+            old_ids_checked.add(best_match['requirement_id'])
+
+        elif max_sim_score >= REQ_MODIFIED_SIM_THRESHOLD:
+            new_req['change_analysis_status'] = CHANGE_STATUS_MODIFIED
+            new_req['change_analysis_original_id'] = best_match['requirement_id']
+            old_ids_checked.add(best_match['requirement_id'])
+
+        else:
+            new_req['change_analysis_status'] = CHANGE_STATUS_NEW
+            new_req['change_analysis_original_id'] = None
+
+    print(
+        f"Statuses: UNCHANGED={len([r for r in new_reqs if r['change_analysis_status'] == 'UNCHANGED'])}, "
+        f"MODIFIED={len([r for r in new_reqs if r['change_analysis_status'] == 'MODIFIED'])}, "
+        f"NEW={len([r for r in new_reqs if r['change_analysis_status'] == 'NEW'])}"
+    )
+
+    # Filter existing requirements to only include those that were NOT matched
+    old_exp_to_check = [
+        r
+        for r in existing_exp_reqs
+        if r['requirement_id'] not in old_ids_checked and r['source_type'] == 'explicit'
+    ]
+
+    return new_reqs, old_exp_to_check
+
+
+def _mark_old_reqs_deprecated(
+    old_reqs_to_check: List[Dict[str, Any]], new_reqs: List[Dict[str, Any]]
+) -> List[str]:
+    '''
+    Step 2: Compares unmatched old explicit requirements against all new requirements
+    to determine if they are DEPRECATED.
+    '''
+    deprecated_ids = []
+    new_exp_reqs = [
+        r for r in new_reqs if r['change_analysis_status'] != CHANGE_STATUS_UNCHANGED
+    ]
+
+    if not new_exp_reqs:
+        return []
+
+    print(
+        f'Starting deprecation check for {len(old_reqs_to_check)} old explicit texts...'
+    )
+
+    for old_req in old_reqs_to_check:
+        max_sim_score = -1.0
+
+        # Find the best match among the new requirements
+        for new_req in new_exp_reqs:
+            sim_score = cosine_similarity(old_req['embedding'], new_req['embedding'])
+            if sim_score > max_sim_score:
+                max_sim_score = sim_score
+
+        # If the best match is below the deprecation threshold, the old requirement is obsolete.
+        if max_sim_score < REQ_DEPRECATED_SIM_THRESHOLD:
+            deprecated_ids.append(old_req['requirement_id'])
+
+    print(f'Marking {len(deprecated_ids)} old explicit requirements as DEPRECATED.')
+    return deprecated_ids
+
+
+def _mark_firestore_updates(
+    project_id: str,
+    version: str,
+    deprecated_exp_ids: List[str],
+    existing_all_reqs: List[Dict[str, Any]],
+) -> None:
+    print('Committing status updates to Firestore (Deprecated/Implicit propagation)...')
+
+    batch = firestore_client.batch()
+    req_collection_ref = firestore_client.collection(
+        'projects', project_id, 'versions', version, 'requirements'
+    )
+
+    # 1. Mark deprecated explicit requirements
+    for req_id in deprecated_exp_ids:
+        doc_ref = req_collection_ref.document(req_id)
+        batch.update(
+            doc_ref,
+            {
+                'change_analysis_status': CHANGE_STATUS_DEPRECATED,
+                'deprecation_reason': 'New requirements doesn\'t have this requirement anymore',
+            },
+        )
+
+    # 1. Mark deprecated implicit requirements
+    for req in existing_all_reqs:
+        if req.get('source_type', None) == 'implicit':
+            # Get all currently non-deprecated explicit IDs linked to this implicit one
+            linked_exp_ids = set(req.get('exp_req_ids', []))
+            non_deprecated_linked_ids = linked_exp_ids.difference(
+                set(deprecated_exp_ids)
+            )
+
+            # Check if all sources are now deprecated
+            if not non_deprecated_linked_ids:
+                # Only mark implicit as deleted if it had sources, and ALL sources are now deprecated
+                if linked_exp_ids:
+                    doc_ref = req_collection_ref.document(req.get('requirement_id'))
+                    batch.update(
+                        doc_ref,
+                        {
+                            'change_analysis_status': CHANGE_STATUS_DEPRECATED,
+                            'deprecation_reason': 'All source explicit requirements deprecated',
+                        },
+                    )
+
+    batch.commit()
 
 
 def _format_discovery_results(
@@ -398,11 +579,12 @@ def _format_discovery_results(
             {
                 'requirement': req_text,  # REFINED TEXT
                 'requirement_type': 'regulation',
-                'priority': 'Medium',  # Default priority since Gemini is skipped
                 'exp_req_ids': (
                     [explicit_requirement_id] if explicit_requirement_id else []
                 ),  # Store the explicit req ID(s) that led to its creation
                 'source_type': 'implicit',  # Mark as implicit
+                'deleted': False,  # New requirements are not deleted
+                'is_duplicate': False,  # To be determined later
                 'regulations': [
                     {
                         'regulation': res.get('regulation', 'N/A'),
@@ -423,73 +605,141 @@ def _format_discovery_results(
 
 
 def _persist_requirements_to_firestore(
-    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int
+    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int = 1
 ) -> List[Dict[str, Any]]:
-
-    print(f'Generating embeddings for {len(requirements)} requirements...')
-
-    texts_to_embed = [req.get('requirement', '') for req in requirements]
-
-    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
+    print(f'Persisting {len(requirements)} requirements starting from ID {start_id}...')
 
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
     )
 
-    doc_tuples = []
+    doc_insertions_tuples_list = []  # Stores (DocumentReference, Data) for batch operations
+    doc_updates_tuples_list = []  # Stores (DocumentReference, Data) for update operations
     written_reqs = []
 
-    for i, (req, embedding_vector) in enumerate(
-        zip(requirements, embedding_vectors), start=start_id
-    ):
+    current_index = start_id
 
-        if 'priority' not in req:
-            req['priority'] = 'Medium'
-
-        req_id = f'REQ-{i:03d}'
+    for req in requirements:
+        req_source_type = req.get('source_type', '')
+        req_change_status = req.get('change_analysis_status', 'NEW')
 
         doc_data = {
             **req,
-            'requirement_id': req_id,
-            'embedding': embedding_vector,
-            'deleted': False,
-            'is_duplicate': False,  # Initialize to False
-            'created_at': firestore.SERVER_TIMESTAMP,
+            'created_at': firestore.SERVER_TIMESTAMP
         }
+        doc_data.pop('temp_id', None)
 
-        doc_tuples.append(
-            (
-                requirements_collection_ref.document(req_id),
-                doc_data,
+        # Case 1: IMPLICIT (Always new insertions)
+        if req_source_type == 'implicit':
+            req_id = (
+                f'{version}-REQ-{current_index:03d}'
+                if not req.get('requirement_id')
+                else req.get('requirement_id')
             )
-        )
+            doc_data['requirement_id'] = req_id
+            doc_data['testcase_status'] = ''
+
+            doc_ref = requirements_collection_ref.document(req_id)
+            doc_insertions_tuples_list.append((doc_ref, doc_data))
+            current_index += 1
+
+            req['requirement_id'] = req_id
+
+        elif req_source_type == 'explicit':
+            change_analysis_original_id = req.get('change_analysis_original_id', '')
+
+            # Case 2: EXPLICIT NEW (New insertions)
+            if req_change_status == CHANGE_STATUS_NEW:
+                req_id = (
+                    f'{version}-REQ-{current_index:03d}'
+                    if not req.get('requirement_id')
+                    else req.get('requirement_id')
+                )
+                doc_data['requirement_id'] = req_id
+                doc_data['testcase_status'] = ''
+
+                doc_ref = requirements_collection_ref.document(req_id)
+                doc_insertions_tuples_list.append((doc_ref, doc_data))
+
+                current_index += 1
+
+                req['requirement_id'] = req_id
+
+            # Case 3: EXPLICIT MODIFIED/UNCHANGED (Update existing document)
+            elif (
+                req_change_status in (CHANGE_STATUS_MODIFIED, CHANGE_STATUS_UNCHANGED)
+                and change_analysis_original_id
+            ):
+                req_id = change_analysis_original_id
+                doc_data['requirement_id'] = req_id
+                doc_data['testcase_status'] = '' if req_change_status == CHANGE_STATUS_MODIFIED else req.get('testcase_status', '')
+
+                doc_ref = requirements_collection_ref.document(req_id)
+                doc_updates_tuples_list.append((doc_ref, doc_data))
+
+                req['requirement_id'] = req_id
+
+            else:
+                print(
+                    f"WARNING: Explicit requirement skipped due to unknown status '{req_change_status}' or missing 'change_analysis_original_id'."
+                )
+                continue
 
         written_reqs.append(
             {
-                'requirement_id': req_id,
-                'embedding': embedding_vector,
-                'is_duplicate': False,
+                'requirement_id': req['requirement_id'],
+                'embedding': req['embedding'],
+                'is_duplicate': req.get('is_duplicate', False),
                 'exp_req_ids': req.get('exp_req_ids', []),
-                'source_type': req.get('source_type'),
+                'source_type': req_source_type,
+                'change_analysis_original_id': req.get('change_analysis_original_id', ''),
+                'change_analysis_status': req_change_status,
             }
         )
 
-    _firestore_commit_many(doc_tuples)
+    if doc_insertions_tuples_list:
+        print(f"Committing {len(doc_insertions_tuples_list)} INSERT/SET operations...")
+        _firestore_commit_many(doc_insertions_tuples_list)
+
+    if doc_updates_tuples_list:
+        print(f"Committing {len(doc_updates_tuples_list)} UPDATE operations...")
+        # NOTE: Updates cannot use _firestore_commit_many (which uses batch.set).
+        # They must be committed with batch.update().
+        batch = firestore_client.batch()
+        for doc_ref, data in doc_updates_tuples_list:
+            update_data = {
+                'requirement_id': data.get('requirement_id', ''),
+                'source_type': data.get('source_type', ''),
+                'requirement': data.get('requirement', ''),
+                'embedding': data.get('embedding', []),
+                'requirement_type': data.get('requirement_type', ''),
+                'deleted': data.get('deleted', False),
+                'is_duplicate': data.get('is_duplicate', False),
+                'change_analysis_status': data.get('change_analysis_status', ''),
+                'change_analysis_original_id': data.get(
+                    'change_analysis_original_id', ''
+                ),
+                'deprecation_reason': data.get('deprecation_reason', ''),
+                'sources': data.get('sources', []),
+                'regulations': data.get('regulations', []),
+                'exp_req_ids': data.get('exp_req_ids', []),
+                'testcase_status': data.get('testcase_status', ''),
+                'updated_at': firestore.SERVER_TIMESTAMP,
+                'created_at': data.get('created_at', firestore.SERVER_TIMESTAMP),
+            }
+
+            batch.update(doc_ref, update_data)
+        batch.commit()
 
     return written_reqs
 
 
 def _mark_duplicates(
     project_id: str, version: str, requirements: List[Dict[str, Any]]
-) -> int:
+) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     '''
-    Compares requirement embeddings and marks duplicates in Firestore using vector similarity.
-    Upon finding a duplicate (req_i), it marks req_i as a duplicate and unions
-    its 'exp_req_ids' into the original requirement (req_j).
-
-    Note: The order of requirements in the input list determines original status:
-    the requirement with the lower index (i.e., appearing earlier) is the original one.
+    Step 4 & 6: Compares requirement embeddings and marks duplicates in Firestore.
+    This function is used for both explicit and implicit deduplication.
     '''
 
     # Stores (duplicate_id, original_id, duplicate_source_ids_to_merge)
@@ -504,12 +754,12 @@ def _mark_duplicates(
             req_j = requirements[j]
 
             # Skip comparing against a requirement that has already been marked as a duplicate.
-            if req_j.get('is_duplicate'):
+            if req_j.get('is_duplicate', False):
                 continue
 
             similarity = cosine_similarity(req_i['embedding'], req_j['embedding'])
 
-            if similarity >= EMBEDDING_SIM_THRESHOLD:
+            if similarity >= DUPE_SIM_THRESHOLD:
                 # req_i is a duplicate of req_j (the earlier one is the original one)
                 # Store the IDs and the source IDs from the duplicate req_i to be merged
                 duplicates_to_update.append(
@@ -540,7 +790,8 @@ def _mark_duplicates(
 
         batch.update(doc_ref, {'is_duplicate': True, 'original_id': original_id})
 
-        if exp_req_ids:
+        # Only merge source IDs if the duplicate is an explicit requirement
+        if exp_req_ids and req_i['source_type'] == 'explicit':
             original_ref = firestore_client.document(
                 'projects',
                 project_id,
@@ -573,10 +824,10 @@ def _mark_duplicates(
 # Main HTTP Function
 # =====================
 @functions_framework.http
-def process_requirements_phase_2(request):
+def process_requirements_phase_2_change_analysis(request):
     '''
     Main Cloud Function entry point for requirements processing Phase 2. It orchestrates the
-    loading, explicit storage, vector deduplication, Discovery Engine search, and persistence
+    change detection, explicit storage, vector deduplication, Discovery Engine search, and persistence
     of implicit requirements, with an added Gemini refinement step.
     '''
     project_id = None
@@ -584,13 +835,6 @@ def process_requirements_phase_2(request):
 
     try:
         payload = request.get_json(silent=True) or {}
-        # Using mock payload for local testing
-        # payload = {
-        #     'project_id': 'abc',
-        #     'version': 'v1',
-        #     'requirements_p1_url': 'gs://genai-sage/projects/abc/v_v1/extractions/requirements-phase-1.json',
-        # }
-
         project_id = payload.get('project_id')
         version = payload.get('version')
         reqs_url = payload.get('requirements_p1_url')
@@ -608,21 +852,46 @@ def process_requirements_phase_2(request):
 
         _update_firestore_status(project_id, version, 'START_REQ_EXTRACT_P2')
 
-        normalised_reqs = _load_and_normalize_exp_req(reqs_url)
+        existing_all_reqs = _load_existing_requirements(project_id, version)
+        existing_exp_reqs = [
+            r for r in existing_all_reqs if r['source_type'] == 'explicit'
+        ]
+
+        print(f'Loaded {len(existing_exp_reqs)} existing explicit requirements.')
+
+        new_exp_reqs = _load_and_normalize_exp_req(reqs_url)
+
+        _update_firestore_status(project_id, version, 'START_CHANGE_DETECTION')
+
+        # old_exp_to_check is the list of existing explicit reqs not covered by the new list
+        new_exp_reqs, old_exp_to_check = _mark_new_reqs_change_status(
+            new_exp_reqs, existing_exp_reqs
+        )
+
+        # Compare the unmatched old texts against all new texts to see if they're obsolete
+        deprecated_exp_ids = _mark_old_reqs_deprecated(old_exp_to_check, new_exp_reqs)
+
+        _update_firestore_status(project_id, version, 'START_DEPRECATION_COMMIT')
+
+        _mark_firestore_updates(
+            project_id, version, deprecated_exp_ids, existing_all_reqs
+        )
 
         _update_firestore_status(project_id, version, 'START_STORE_EXPLICIT')
 
-        explicit_reqs = _persist_requirements_to_firestore(
-            project_id, version, requirements=normalised_reqs, start_id=1
+        persisted_new_exp_reqs = _persist_requirements_to_firestore(
+            project_id, version, new_exp_reqs
         )
 
-        print(f'Explicit writes => {len(explicit_reqs)}')
+        print(f'New/Modified/Unchanged Explicit writes => {len(persisted_new_exp_reqs)}')
 
         _update_firestore_status(project_id, version, 'START_DEDUPE_EXPLICIT')
 
-        dupe_exps, orig_exps = _mark_duplicates(project_id, version, explicit_reqs)
+        dupe_exps, orig_exps = _mark_duplicates(
+            project_id, version, persisted_new_exp_reqs
+        )
 
-        print(f'Dedupe => Marked {len(dupe_exps)} explicit duplicates.')
+        print(f'Dedupe => Marked {len(dupe_exps)} new explicit duplicates.')
 
         _update_firestore_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
 
@@ -640,16 +909,16 @@ def process_requirements_phase_2(request):
             project_id,
             version,
             implicit_reqs,
-            start_id=len(explicit_reqs) + 1,
+            start_id=len(persisted_new_exp_reqs),
         )
 
         _update_firestore_status(project_id, version, 'START_DEDUPE_IMPLICIT')
 
         dupe_imps, orig_imps = _mark_duplicates(project_id, version, implicit_reqs)
 
-        _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT')
-
         print(f'Vector Dedupe (Implicit Only) => Marked {len(dupe_imps)} duplicates.')
+
+        _update_firestore_status(project_id, version, 'CONFIRM_REQ_EXTRACT')
 
         return ('OK', 200)
 
