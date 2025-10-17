@@ -9,6 +9,9 @@ from typing import Any, Dict, Iterator, List, Tuple
 
 import functions_framework
 
+# from dotenv import load_dotenv
+# load_dotenv()
+
 from google import genai
 from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 from google.cloud import storage, firestore, discoveryengine_v1
@@ -675,3 +678,5 @@ def process_requirements_phase_2(request):
             ),
             500,
         )
+
+# process_requirements_phase_2()
