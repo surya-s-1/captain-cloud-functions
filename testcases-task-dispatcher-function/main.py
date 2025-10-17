@@ -44,7 +44,7 @@ def process_for_testcases(request):
         logging.info(f'Start orchestration for project={project_id}, version={version}')
 
         firestore_client.document(f'projects/{project_id}/versions/{version}').update(
-            {'status': 'START_TESTCASE_CREATION'}
+            {'testcase_status': 'START_TESTCASE_CREATION'}
         )
 
         requirements_ref = firestore_client.collection(
@@ -63,7 +63,7 @@ def process_for_testcases(request):
 
         for doc in all_requirements:
             doc_data = doc.to_dict()
-            if doc_data.get('status') not in excluded_statuses:
+            if doc_data.get('testcase_status') not in excluded_statuses:
                 requirements_to_process.append(doc)
 
         logging.info(f'Found {len(requirements_to_process)} requirements to enqueue.')
@@ -94,7 +94,7 @@ def process_for_testcases(request):
                 tasks_client.create_task(parent=QUEUE_NAME, task=task)
                 firestore_client.document(
                     f'projects/{project_id}/versions/{version}/requirements/{req_doc.id}'
-                ).update({'status': 'TESTCASES_CREATION_QUEUED'})
+                ).update({'testcase_status': 'TESTCASES_CREATION_QUEUED'})
                 docs_to_update.append(req_doc.id)
 
             except Exception as e:
