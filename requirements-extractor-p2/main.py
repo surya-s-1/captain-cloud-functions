@@ -248,24 +248,30 @@ def _refine_candidates_parallel(
 @_retry(max_attempts=3)
 def _generate_embedding(text: str) -> List[float]:
     '''Generates a vector embedding for a given text using the GenAI API.'''
-    if not text:
-        return []
+    try:
+        if not text:
+            return []
 
-    # Use the same timeout mechanism as generation calls for safety
-    with futures.ThreadPoolExecutor(max_workers=1) as ex:
-        future = ex.submit(
-            lambda: genai_client.models.embed_content(
-                model=EMBEDDING_MODEL,
-                contents=[Content(parts=[Part(text=text)])],
+        # Use the same timeout mechanism as generation calls for safety
+        with futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(
+                lambda: genai_client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=[Content(parts=[Part(text=text)])],
+                )
             )
-        )
-        response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
+            response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
 
-    # The response is a list of ContentEmbedding objects (one per text input).
-    embeddings = response.embeddings
-    if embeddings:
-        return embeddings[0].values
-    return []
+        # The response is a list of ContentEmbedding objects (one per text input).
+        embeddings = response.embeddings
+        if embeddings:
+            return embeddings[0].values
+        return []
+    except Exception as e:
+        logging.exception(
+            f'Embedding generation failed for text: \'{text}...\'. Error: {e}'
+        )
+        return []
 
 
 @_retry(max_attempts=3)
