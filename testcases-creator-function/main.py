@@ -34,7 +34,7 @@ def _update_requirement_status(
     doc_ref = firestore_client.document(
         'projects', project_id, 'versions', version, 'requirements', requirement_id
     )
-    doc_ref.set({'status': status}, merge=True)
+    doc_ref.set({'testcase_status': status}, merge=True)
     logging.info(f'Requirement {requirement_id} status => {status}')
 
 
@@ -78,10 +78,10 @@ def _firestore_commit_many(
             batch.commit()
             batch = firestore_client.batch()
             count = 0
-    
+
     if count:
         batch.commit()
-    
+
     return total
 
 
@@ -117,8 +117,7 @@ def _generate_test_cases(requirement_data: Dict[str, Any]) -> List[Dict[str, Any
         model=GENAI_MODEL,
         contents=[Content(parts=[Part(text=prompt)], role='user')],
         config=GenerateContentConfig(
-            response_mime_type='application/json',
-            response_json_schema=response_schema
+            response_mime_type='application/json', response_json_schema=response_schema
         ),
     )
 
@@ -162,7 +161,7 @@ def generate_test_cases(request):
             }, 200
 
         req_data = req_doc.to_dict()
-        if req_data.get('status') == 'TASK_CREATION_COMPLETE':
+        if req_data.get('testcase_status') == 'TASK_CREATION_COMPLETE':
             logging.info(f'Requirement {requirement_id} already processed. Skipping.')
             return {'status': 'skipped', 'message': 'Already processed, skipping.'}, 200
 
@@ -220,13 +219,24 @@ def generate_test_cases(request):
             project_id, version, requirement_id, 'TESTCASES_CREATION_COMPLETE'
         )
 
-        collection_ref = firestore_client.collection('projects', project_id, 'versions', version, 'requirements')
-        requirements = [doc.to_dict() for doc in collection_ref.get() if doc.get('deleted') != True]
+        collection_ref = firestore_client.collection(
+            'projects', project_id, 'versions', version, 'requirements'
+        )
+        requirements = [
+            doc.to_dict() for doc in collection_ref.get() if doc.get('deleted') != True
+        ]
 
-        if (len(requirements) == len([req for req in requirements if req.get('status', '') == 'TESTCASES_CREATION_COMPLETE'])):
-            version_ref = firestore_client.document('projects', project_id, 'versions', version)
-            version_ref.update({ 'status': 'CONFIRM_TESTCASES' })
-
+        if len(requirements) == len(
+            [
+                req
+                for req in requirements
+                if req.get('testcase_status', '') == 'TESTCASES_CREATION_COMPLETE'
+            ]
+        ):
+            version_ref = firestore_client.document(
+                'projects', project_id, 'versions', version
+            )
+            version_ref.update({'status': 'CONFIRM_TESTCASES'})
 
         return (
             json.dumps(
