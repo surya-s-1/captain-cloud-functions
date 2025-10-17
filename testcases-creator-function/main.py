@@ -161,7 +161,7 @@ def generate_test_cases(request):
             }, 200
 
         req_data = req_doc.to_dict()
-        if req_data.get('testcase_status') == 'TASK_CREATION_COMPLETE':
+        if req_data.get('testcase_status') == 'TESTCASES_CREATION_COMPLETE':
             logging.info(f'Requirement {requirement_id} already processed. Skipping.')
             return {'status': 'skipped', 'message': 'Already processed, skipping.'}, 200
 
