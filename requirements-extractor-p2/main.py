@@ -320,6 +320,8 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
 
     processed.sort(key=lambda x: x['relevance'], reverse=True)
 
+    print(f'Discovery processed => {len(processed)}')
+
     return [el for el in processed if el['relevance'] > DISCOVERY_RELEVANCE_THRESHOLD]
 
 
@@ -329,11 +331,14 @@ def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str
     '''
     req_text, req_id = req_tuple
     discovery_results = _query_discovery_engine_single(
-        f'Regulations related to: {req_text}'
+        f'Find the regulations and standards and procedures that apply to the following requirement: {req_text}'
     )
-    # Attach the source ID to each result
+
+    print(f'{req_id} => Discovery results => {len(discovery_results)}')
+
     for res in discovery_results:
         res['explicit_requirement_id'] = req_id
+    
     return discovery_results
 
 
