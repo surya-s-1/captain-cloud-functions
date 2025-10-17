@@ -398,7 +398,6 @@ def _format_discovery_results(
             {
                 'requirement': req_text,  # REFINED TEXT
                 'requirement_type': 'regulation',
-                'priority': 'Medium',  # Default priority since Gemini is skipped
                 'exp_req_ids': (
                     [explicit_requirement_id] if explicit_requirement_id else []
                 ),  # Store the explicit req ID(s) that led to its creation
@@ -443,11 +442,7 @@ def _persist_requirements_to_firestore(
     for i, (req, embedding_vector) in enumerate(
         zip(requirements, embedding_vectors), start=start_id
     ):
-
-        if 'priority' not in req:
-            req['priority'] = 'Medium'
-
-        req_id = f'REQ-{i:03d}'
+        req_id = f'{version}-REQ-{i:03d}'
 
         doc_data = {
             **req,
