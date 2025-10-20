@@ -28,6 +28,8 @@ REQ_DEPRECATED_SIM_THRESHOLD = REQ_MODIFIED_SIM_THRESHOLD
 MAX_WORKERS = 16
 FIRESTORE_COMMIT_CHUNK = 450
 
+SOURCE_TYPE_EXPLICIT = 'explicit'
+
 CHANGE_STATUS_NEW = 'NEW'
 CHANGE_STATUS_MODIFIED = 'MODIFIED'
 CHANGE_STATUS_UNCHANGED = 'UNCHANGED'
@@ -191,7 +193,7 @@ def _load_updated_exp_requirements(
                 'requirement_type': r.get('requirement_type', 'functional'),
                 'exp_req_ids': [],
                 'sources': r.get('sources', []),
-                'source_type': 'explicit',
+                'source_type': SOURCE_TYPE_EXPLICIT,
                 'embedding': embedding_vector,
                 'change_analysis_status': CHANGE_STATUS_NEW,  # Initial status
                 'deleted': False,
@@ -209,7 +211,7 @@ def _load_existing_exp_requirements(
 
     collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
-    ).where('source_type', '==', 'explicit')
+    ).where('source_type', '==', SOURCE_TYPE_EXPLICIT)
 
     batch = firestore_client.batch()
 
@@ -255,7 +257,7 @@ def _load_existing_exp_requirements(
         )
         .where('deleted', '==', False)
         .where('duplicate', '==', False)
-        .where('source_type', '==', 'explicit')
+        .where('source_type', '==', SOURCE_TYPE_EXPLICIT)
         .where('change_analysis_status', '!=', CHANGE_STATUS_IGNORED)
         # We only need to exclude IGNORED here because the batch operation above
         # moved all DEPRECATED, Deleted, and Duplicate docs into the IGNORED status.
@@ -291,7 +293,7 @@ def _mark_new_reqs_change_status(
 
         # Find the best match among existing explicit requirements
         for old_req in existing_exp_reqs:
-            if old_req['source_type'] != 'explicit':
+            if old_req['source_type'] != SOURCE_TYPE_EXPLICIT:
                 continue
             sim_score = _cosine_similarity(new_req['embedding'], old_req['embedding'])
 
@@ -321,7 +323,7 @@ def _mark_new_reqs_change_status(
     old_exp_to_check = [
         r
         for r in existing_exp_reqs
-        if r['requirement_id'] not in old_ids_checked and r['source_type'] == 'explicit'
+        if r['requirement_id'] not in old_ids_checked and r['source_type'] == SOURCE_TYPE_EXPLICIT
     ]
     return new_exp_reqs, old_exp_to_check
 
@@ -385,7 +387,7 @@ def _mark_unchanged_modified_new_in_firestore(
             'change_analysis_near_duplicate_id', ''
         )
 
-        if req_source_type == 'explicit':
+        if req_source_type == SOURCE_TYPE_EXPLICIT:
             # Case 1: EXPLICIT NEW (New insertions)
             if req_change_status == CHANGE_STATUS_NEW:
                 req_id = f'{version}-REQ-E-{current_index:03d}'
