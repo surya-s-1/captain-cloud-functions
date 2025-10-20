@@ -247,10 +247,10 @@ def _load_existing_exp_requirements(
             },
         )
 
-    deprecated_query = collection_ref.where(
+    ignored_query = collection_ref.where(
         'change_analysis_status', '==', CHANGE_STATUS_IGNORED
     )
-    for doc in deprecated_query.stream():
+    for doc in ignored_query.stream():
         batch.update(
             doc.reference,
             {
