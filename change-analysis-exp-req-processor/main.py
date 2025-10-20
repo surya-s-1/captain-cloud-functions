@@ -499,15 +499,16 @@ def _mark_unchanged_modified_new_in_firestore(
 
 
 def _mark_duplicates(
-    project_id: str, version: str, requirements: List[Dict[str, Any]]
+    project_id: str, version: str, newly_written_reqs: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    '''Compares requirement embeddings and marks duplicates in Firestore.'''
+    '''Compares newly written requirement embeddings and marks duplicates in Firestore.'''
+
     duplicates_to_update: List[Tuple[str, str, List[str]]] = []
 
-    for i in range(len(requirements)):
-        req_i = requirements[i]
+    for i in range(len(newly_written_reqs)):
+        req_i = newly_written_reqs[i]
         for j in range(i):
-            req_j = requirements[j]
+            req_j = newly_written_reqs[j]
             if req_j.get('duplicate', False):
                 continue
 
@@ -526,7 +527,7 @@ def _mark_duplicates(
 
     if not duplicates_to_update:
         print('No explicit duplicates found using vector embeddings in this batch.')
-        return [], requirements
+        return [], newly_written_reqs
 
     print(f'Found {len(duplicates_to_update)} explicit duplicates to mark.')
     batch = firestore_client.batch()
@@ -557,7 +558,7 @@ def _mark_duplicates(
 
     all_duplicates: List[Dict[str, Any]] = []
     all_originals: List[Dict[str, Any]] = []
-    for req in requirements:
+    for req in newly_written_reqs:
         if req.get('duplicate', False):
             all_duplicates.append(req)
         else:
