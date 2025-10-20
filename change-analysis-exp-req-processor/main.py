@@ -209,7 +209,7 @@ def _load_existing_exp_requirements(
 
     collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
-    )
+    ).where('source_type', '==', 'explicit')
 
     batch = firestore_client.batch()
 
