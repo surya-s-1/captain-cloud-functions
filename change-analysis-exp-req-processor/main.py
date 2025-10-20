@@ -639,7 +639,7 @@ def explicit_req_processor_change_analysis(request):
             f'Vector Dedupe (Explicit)=> Marked {len(dupe_exps)} new explicit duplicates.'
         )
 
-        _update_version_status(project_id, version, 'CONFIRM_CHANGE_ANALYSIS')
+        _update_version_status(project_id, version, 'CONFIRM_CHANGE_ANALYSIS_EXPLICIT')
 
         return (
             json.dumps(
@@ -655,8 +655,10 @@ def explicit_req_processor_change_analysis(request):
 
     except Exception as e:
         logging.exception('Error during explicit requirements extraction phase 2:')
+
         if project_id and version:
-            _update_version_status(project_id, version, 'ERR_REQ_EXTRACT_P2_EXPLICIT')
+            _update_version_status(project_id, version, 'ERR_CHANGE_ANALYSIS_EXPLICIT')
+        
         return (
             json.dumps(
                 {
