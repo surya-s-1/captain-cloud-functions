@@ -639,7 +639,7 @@ def explicit_req_processor_change_analysis(request):
             f'Vector Dedupe (Explicit)=> Marked {len(dupe_exps)} new explicit duplicates.'
         )
 
-        _update_version_status(project_id, version, 'CONFIRM_EXPLICIT_PROCESSED')
+        _update_version_status(project_id, version, 'CONFIRM_CHANGE_ANALYSIS')
 
         return (
             json.dumps(
