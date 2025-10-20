@@ -247,6 +247,17 @@ def _load_existing_exp_requirements(
             },
         )
 
+    deprecated_query = collection_ref.where(
+        'change_analysis_status', '==', CHANGE_STATUS_IGNORED
+    )
+    for doc in deprecated_query.stream():
+        batch.update(
+            doc.reference,
+            {
+                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_IGNORED,
+            },
+        )
+
     print('Committing all batch updates...')
     batch.commit()
     print('Batch committed successfully.')
@@ -558,7 +569,7 @@ def _mark_duplicates(
 # ===================== # Main HTTP Function # =====================
 
 
-# @functions_framework.http
+@functions_framework.http
 def explicit_req_processor_change_analysis(request):
     '''
     Main Cloud Function entry point for Explicit Requirement processing (Phase 2).
@@ -657,4 +668,4 @@ def explicit_req_processor_change_analysis(request):
         )
 
 
-explicit_req_processor_change_analysis(None)
+# explicit_req_processor_change_analysis(None)
