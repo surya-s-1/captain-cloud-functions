@@ -11,8 +11,8 @@ from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 from google.cloud import firestore, discoveryengine_v1
 import functions_framework
 
-from dotenv import load_dotenv
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # ===================== # Environment variables # =====================
 # Required environment variables
@@ -701,7 +701,7 @@ def process_new_or_modified_implicit_search(project_id: str, version: str) -> No
 # ===================== # Main HTTP Function for Implicit Processing # =====================
 
 
-# @functions_framework.http
+@functions_framework.http
 def process_implicit_requirements(request):
     '''
     Cloud Function entry point to manage implicit requirements:
@@ -711,12 +711,12 @@ def process_implicit_requirements(request):
     project_id = None
     version = None
     try:
-        # payload = request.get_json(silent=True) or {}
+        payload = request.get_json(silent=True) or {}
         # Mock data
-        payload = {
-            'project_id': 'abc',
-            'version': 'v2',
-        }
+        # payload = {
+        #     'project_id': 'abc',
+        #     'version': 'v2',
+        # }
         project_id = payload.get('project_id')
         version = payload.get('version')
 
@@ -761,4 +761,4 @@ def process_implicit_requirements(request):
             500,
         )
 
-process_implicit_requirements(None)
+# process_implicit_requirements(None)

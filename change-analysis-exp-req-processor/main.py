@@ -11,9 +11,8 @@ from google.genai.types import HttpOptions, Part, Content
 from google.cloud import storage, firestore
 import functions_framework
 
-from dotenv import load_dotenv
-
-load_dotenv()
+# from dotenv import load_dotenv
+# load_dotenv()
 
 # ===================== # Environment variables # =====================
 # These are required dependencies for the functions in this file
