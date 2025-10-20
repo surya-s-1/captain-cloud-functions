@@ -749,8 +749,10 @@ def process_implicit_requirements(request):
 
     except Exception as e:
         logging.exception('Error during implicit requirements processing:')
+
         if project_id and version:
-            _update_version_status(project_id, version, 'ERR_REQ_EXTRACT_P2_IMPLICIT')
+            _update_version_status(project_id, version, 'ERR_CHANGE_ANALYSIS_IMPLICIT')
+        
         return (
             json.dumps(
                 {
