@@ -24,17 +24,18 @@ PROJECT_ID = os.getenv('PROJECT_ID')
 LOCATION = os.getenv('LOCATION')
 DATA_STORE_ID = os.getenv('DATA_STORE_ID')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
+EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
+DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
+DISCOVERY_RELEVANCE_THRESHOLD = float(os.getenv('DISCOVERY_RELEVANCE_THRESHOLD'))
 
 # Tunables (safe defaults for speed and cost-efficiency)
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
 FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
-EMBEDDING_MODEL = 'text-embedding-004'
-DUPLICATE_SIM_THRESHOLD = 0.95
+
 GENAI_MODEL = 'gemini-2.5-flash'
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
-DISCOVERY_RELEVANCE_THRESHOLD = 0.2
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
@@ -534,7 +535,7 @@ def _mark_duplicates(
 
             similarity = cosine_similarity(req_i['embedding'], req_j['embedding'])
 
-            if similarity >= DUPLICATE_SIM_THRESHOLD:
+            if similarity >= DUPE_SIM_THRESHOLD:
                 # req_i is a duplicate of req_j (the earlier one is the original one)
                 # Store the IDs and the source IDs from the duplicate req_i to be merged
                 duplicates_to_update.append(
