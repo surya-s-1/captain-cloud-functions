@@ -31,7 +31,20 @@ FIRESTORE_COMMIT_CHUNK = 450
 CHANGE_STATUS_NEW = 'NEW'
 CHANGE_STATUS_MODIFIED = 'MODIFIED'
 CHANGE_STATUS_UNCHANGED = 'UNCHANGED'
+CHANGE_STATUS_IGNORED = 'IGNORED'
 CHANGE_STATUS_DEPRECATED = 'DEPRECATED'
+CHANGE_STATUS_IGNORED_REASON_DELETED = (
+    'Deleted in previous version, ignored for new version analysis.'
+)
+CHANGE_STATUS_IGNORED_REASON_DUPLICATE = (
+    'Marked as duplicate in previous version, ignored for new version analysis.'
+)
+CHANGE_STATUS_IGNORED_REASON_DEPRECATED = (
+    'Deprecated in previous version, ignored for new version analysis.'
+)
+CHANGE_STATUS_IGNORED_REASON_IGNORED = (
+    'Ignored in previous version, sp ignored for new version analysis as well.'
+)
 
 # ===================== # Clients # =====================
 storage_client = storage.Client()
@@ -192,8 +205,50 @@ def _load_updated_exp_requirements(
 def _load_existing_exp_requirements(
     project_id: str, version: str
 ) -> List[Dict[str, Any]]:
-    '''Loads all *existing*, non-deleted, non-duplicate requirements from the current Firestore version.'''
     print('Loading existing requirements from Firestore for change detection...')
+
+    collection_ref = firestore_client.collection(
+        'projects', project_id, 'versions', version, 'requirements'
+    )
+
+    batch = firestore_client.batch()
+
+    deleted_query = collection_ref.where('deleted', '==', True)
+    for doc in deleted_query.stream():
+        batch.update(
+            doc.reference,
+            {
+                'change_analysis_status': CHANGE_STATUS_IGNORED,
+                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DELETED,
+            },
+        )
+
+    duplicate_query = collection_ref.where('duplicate', '==', True)
+    for doc in duplicate_query.stream():
+        batch.update(
+            doc.reference,
+            {
+                'change_analysis_status': CHANGE_STATUS_IGNORED,
+                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DUPLICATE,
+            },
+        )
+
+    deprecated_query = collection_ref.where(
+        'change_analysis_status', '==', CHANGE_STATUS_DEPRECATED
+    )
+    for doc in deprecated_query.stream():
+        batch.update(
+            doc.reference,
+            {
+                'change_analysis_status': CHANGE_STATUS_IGNORED,
+                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DEPRECATED,
+            },
+        )
+
+    print('Committing all batch updates...')
+    batch.commit()
+    print('Batch committed successfully.')
+
     query = (
         firestore_client.collection(
             'projects', project_id, 'versions', version, 'requirements'
@@ -201,7 +256,9 @@ def _load_existing_exp_requirements(
         .where('deleted', '==', False)
         .where('duplicate', '==', False)
         .where('source_type', '==', 'explicit')
-        .where('change_analysis_status', '!=', CHANGE_STATUS_DEPRECATED)
+        .where('change_analysis_status', '!=', CHANGE_STATUS_IGNORED)
+        # We only need to exclude IGNORED here because the batch operation above
+        # moved all DEPRECATED, Deleted, and Duplicate docs into the IGNORED status.
     )
 
     existing_reqs = []
@@ -299,7 +356,7 @@ def _mark_deprecated_in_firestore(
             doc_ref,
             {
                 'change_analysis_status': CHANGE_STATUS_DEPRECATED,
-                'change_analysis_reason': 'Not detected in updated requirements',
+                'change_analysis_status_reason': 'Not detected in updated requirements',
                 'updated_at': firestore.SERVER_TIMESTAMP,
             },
         )
@@ -356,7 +413,7 @@ def _mark_unchanged_modified_new_in_firestore(
                     **req,
                     'requirement_id': req_id,
                     'change_analysis_status_reason': (
-                        'Didn\'t detect any major changes in updated requirements'
+                        'Did not detect any major changes in updated requirements'
                         if req_change_status == CHANGE_STATUS_UNCHANGED
                         else 'Detected considerable modifications in updated requirements'
                     ),
@@ -382,8 +439,8 @@ def _mark_unchanged_modified_new_in_firestore(
                     'change_analysis_near_duplicate_id': doc_data.get(
                         'change_analysis_near_duplicate_id', ''
                     ),
-                    'change_analysis_reason': doc_data.get(
-                        'change_analysis_reason', ''
+                    'change_analysis_status_reason': doc_data.get(
+                        'change_analysis_status_reason', ''
                     ),
                     'sources': doc_data.get('sources', []),
                     'testcase_status': doc_data.get('testcase_status', ''),
@@ -500,7 +557,7 @@ def _mark_duplicates(
 
 
 # @functions_framework.http
-def explicit_req_processor_change_analysis(request=None):
+def explicit_req_processor_change_analysis(request):
     '''
     Main Cloud Function entry point for Explicit Requirement processing (Phase 2).
     This function handles change detection, deprecation, explicit persistence,
@@ -509,12 +566,13 @@ def explicit_req_processor_change_analysis(request=None):
     project_id = None
     version = None
     try:
-        # payload = request.get_json(silent=True) or {}
-        payload = {
-            'project_id': 'abc',
-            'version': 'v2',
-            'requirements_p1_url': 'gs://genai-sage/projects/abc/v_v2/extractions/requirements-phase-1.json',
-        }
+        payload = request.get_json(silent=True) or {}
+        # Mock data for local testing
+        # payload = {
+        #     'project_id': 'abc',
+        #     'version': 'v2',
+        #     'requirements_p1_url': 'gs://genai-sage/projects/abc/v_v2/extractions/requirements-phase-1.json',
+        # }
         project_id = payload.get('project_id')
         version = payload.get('version')
         reqs_url = payload.get('requirements_p1_url')
@@ -597,4 +655,4 @@ def explicit_req_processor_change_analysis(request=None):
         )
 
 
-explicit_req_processor_change_analysis()
+explicit_req_processor_change_analysis(None)

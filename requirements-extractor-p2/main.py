@@ -469,8 +469,12 @@ def _persist_requirements_to_firestore(
             'deleted': req.get('deleted', False),
             'duplicate': req.get('duplicate', False),  # Initialize to False
             'change_analysis_status': req.get('change_analysis_status', ''),
-            'change_analysis_near_duplicate_id': req.get('change_analysis_near_duplicate_id', ''),
-            'deprecation_reason': req.get('deprecation_reason', ''),
+            'change_analysis_status_reason': req.get(
+                'change_analysis_status_reason', ''
+            ),
+            'change_analysis_near_duplicate_id': req.get(
+                'change_analysis_near_duplicate_id', ''
+            ),
             'sources': req.get('sources', []),
             'regulations': req.get('regulations', []),
             'exp_req_ids': req.get('exp_req_ids', []),
