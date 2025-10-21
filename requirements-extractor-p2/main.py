@@ -469,7 +469,7 @@ def _persist_requirements_to_firestore(
             'requirement_type': req.get('requirement_type', ''),
             'deleted': req.get('deleted', False),
             'duplicate': req.get('duplicate', False),  # Initialize to False
-            'change_analysis_status': req.get('change_analysis_status', ''),
+            'change_analysis_status': req.get('change_analysis_status', 'NEW'),
             'change_analysis_status_reason': req.get(
                 'change_analysis_status_reason', ''
             ),
