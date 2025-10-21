@@ -70,7 +70,7 @@ def _firestore_commit_many(
     total = 0
 
     for doc_ref, data in doc_tuples:
-        batch.set(doc_ref, data)
+        batch.set(doc_ref, data, merge=True)
         count += 1
         total += 1
 
