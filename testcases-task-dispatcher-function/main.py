@@ -24,6 +24,8 @@ tasks_client = tasks_v2.CloudTasksClient()
 logging.basicConfig(level=logging.INFO)
 
 EXCLUDED_CHANGE_STATUSES = ['IGNORED', 'DEPRECATED', 'UNCHANGED']
+DEPRECATED_CHANGE_STATUSES = ['IGNORED', 'DEPRECATED', 'MODIFIED']
+UNCHANGED_CHANGE_STATUSES = ['UNCHANGED']
 EXCLUDED_TESTCASE_STATUSES = [
     'TESTCASES_CREATION_QUEUED',
     'TESTCASES_CREATION_STARTED',
@@ -78,12 +80,13 @@ def process_for_testcases(request):
 
         for r in requirements_to_process:
             try:
+                count = 0
+                batch = firestore_client.batch()
+
                 if (
                     r.get('requirement_id', None)
-                    and r.get('change_analysis_status', '') in EXCLUDED_CHANGE_STATUSES
+                    and r.get('change_analysis_status', '') in DEPRECATED_CHANGE_STATUSES
                 ):
-                    batch = firestore_client.batch()
-
                     testcases_to_update = (
                         firestore_client.collection(
                             'projects', project_id, 'versions', version, 'testcases'
@@ -93,7 +96,47 @@ def process_for_testcases(request):
                     )
 
                     for t in testcases_to_update:
+                        if count >= 450:
+                            batch.commit()
+                            batch = firestore_client.batch()
+                            count = 0
+
                         t_id = t.id
+
+                        batch.update(
+                            firestore_client.document(
+                                'projects',
+                                project_id,
+                                'versions',
+                                version,
+                                'testcases',
+                                t_id,
+                            ),
+                            {'change_analysis_status': 'DEPRECATED'},
+                        )
+                        count += 1
+
+                if (
+                    r.get('requirement_id', None)
+                    and r.get('change_analysis_status', '')
+                    in UNCHANGED_CHANGE_STATUSES
+                ):
+                    testcases_to_update = (
+                        firestore_client.collection(
+                            'projects', project_id, 'versions', version, 'testcases'
+                        )
+                        .where('requirement_id', '==', r.get('requirement_id'))
+                        .get()
+                    )
+
+                    for t in testcases_to_update:
+                        if count >= 450:
+                            batch.commit()
+                            batch = firestore_client.batch()
+                            count = 0
+                        
+                        t_id = t.id
+
                         batch.update(
                             firestore_client.document(
                                 'projects',
@@ -104,13 +147,14 @@ def process_for_testcases(request):
                                 t_id,
                             ),
                             {
-                                'change_analysis_status': 'UNCHANGED' 
-                                if r.get('change_analysis_status', '') == 'UNCHANGED'
-                                else 'DEPRECATED'
-                            }
+                                'change_analysis_status': 'UNCHANGED'
+                            },
                         )
-
+                        count += 1
+                
+                if count > 0:
                     batch.commit()
+            
             except Exception as e:
                 logging.exception(f'Error when updating testcases for {r.id}: {e}')
                 continue
