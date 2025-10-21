@@ -60,7 +60,7 @@ def process_for_testcases(request):
         logging.info(f'Start orchestration for project {project_id}, version {version}')
 
         firestore_client.document('projects', project_id, 'versions', version).update(
-            {'testcase_status': 'START_TESTCASE_CREATION'}
+            {'status': 'START_TESTCASE_CREATION'}
         )
 
         requirements_ref = firestore_client.collection(
