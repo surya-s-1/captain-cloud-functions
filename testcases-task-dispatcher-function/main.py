@@ -67,9 +67,14 @@ def process_for_testcases(request):
             'projects', project_id, 'versions', version, 'requirements'
         )
 
-        query = (
-            requirements_ref.where('deleted', '!=', True)
-            .select(['requirement_id', 'deleted', 'duplicate', 'change_analysis_status', 'testcase_status'])
+        query = requirements_ref.where('deleted', '!=', True).select(
+            [
+                'requirement_id',
+                'deleted',
+                'duplicate',
+                'change_analysis_status',
+                'testcase_status',
+            ]
         )
 
         requirements_to_process = query.get()
@@ -109,9 +114,11 @@ def process_for_testcases(request):
 
             try:
                 tasks_client.create_task(parent=QUEUE_NAME, task=task)
+
                 firestore_client.document(
                     f'projects/{project_id}/versions/{version}/requirements/{req_doc.id}'
                 ).update({'testcase_status': 'TESTCASES_CREATION_QUEUED'})
+
                 docs_to_update.append(req_doc.id)
 
             except Exception as e:
@@ -136,3 +143,6 @@ def process_for_testcases(request):
         logging.exception(e)
 
         return {'error': str(e)}, 500
+
+
+# process_for_testcases(None)
