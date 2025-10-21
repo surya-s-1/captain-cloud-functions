@@ -137,6 +137,13 @@ def process_for_testcases(request):
 
                         t_id = t.id
 
+                        if t.to_dict().get('change_analysis_status', '') in ['NEW', 'UNCHANGED']:
+                            change_status = 'UNCHANGED'
+                            change_status_reason = 'This testcase was valid and not deprecated in previous version'
+                        else:
+                            change_status = 'DEPRECATED'
+                            change_status_reason = 'This testcase was deprecated in previous version'
+
                         batch.update(
                             firestore_client.document(
                                 'projects',
@@ -147,12 +154,8 @@ def process_for_testcases(request):
                                 t_id,
                             ),
                             {
-                                'change_analysis_status': (
-                                    'UNCHANGED'
-                                    if t.to_dict().get('change_analysis_status', '')
-                                    in ['NEW', 'UNCHANGED']
-                                    else 'DEPRECATED'
-                                )
+                                'change_analysis_status': change_status,
+                                'change_analysis_status_reason': change_status_reason
                             },
                         )
                         count += 1
