@@ -126,6 +126,32 @@ def _generate_test_cases(requirement_data: Dict[str, Any]) -> List[Dict[str, Any
     return json.loads(resp.text)
 
 
+def check_completed_status(firestore_client: firestore.Client, project_id: str, version: str):
+    unexcluded_reqs = (
+        firestore_client.collection(
+            'projects', project_id, 'versions', version, 'requirements'
+        )
+        .where('deleted', '==', False)
+        .where('duplicate', '==', False)
+        .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
+    ).get()
+
+    completed_reqs = (
+        firestore_client.collection(
+            'projects', project_id, 'versions', version, 'requirements'
+        )
+        .where('deleted', '==', False)
+        .where('duplicate', '==', False)
+        .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
+        .where('testcase_status', '==', 'TESTCASES_CREATION_COMPLETE')
+    ).get()
+
+    if len(unexcluded_reqs) == len(completed_reqs):
+        firestore_client.document(
+            'projects', project_id, 'versions', version
+        ).update({'status': 'CONFIRM_TESTCASES'})
+
+
 # =======================================================
 # Cloud Function: Cloud Tasks Worker
 # Processes a single requirement to generate test cases
@@ -157,14 +183,21 @@ def generate_test_cases(request):
 
         if not req_doc.exists:
             logging.warning(f'Requirement {requirement_id} not found.')
+
+            check_completed_status(firestore_client, project_id, version)
+
             return {
                 'status': 'skipped',
                 'message': 'Requirement not found, skipping.',
             }, 200
 
         req_data = req_doc.to_dict()
+
         if req_data.get('testcase_status') == 'TESTCASES_CREATION_COMPLETE':
             logging.info(f'Requirement {requirement_id} already processed. Skipping.')
+
+            check_completed_status(firestore_client, project_id, version)
+
             return {'status': 'skipped', 'message': 'Already processed, skipping.'}, 200
 
         _update_requirement_status(
@@ -200,17 +233,13 @@ def generate_test_cases(request):
             testcase_docs.append(
                 (
                     firestore_client.document(
-                        'projects',
-                        project_id,
-                        'versions',
-                        version,
-                        'testcases',
-                        tc_id
+                        'projects', project_id, 'versions', version, 'testcases', tc_id
                     ),
                     {
                         **tc,
                         'testcase_id': tc_id,
                         'requirement_id': requirement_id,
+                        'created_at': firestore.SERVER_TIMESTAMP,
                         'change_analysis_status': 'NEW',
                         'toolCreated': False,
                         'toolIssueLink': '',
@@ -237,29 +266,8 @@ def generate_test_cases(request):
             project_id, version, requirement_id, 'TESTCASES_CREATION_COMPLETE'
         )
 
-        unexcluded_reqs = (
-            firestore_client.collection(
-                'projects', project_id, 'versions', version, 'requirements'
-            )
-            .where('deleted', '==', False)
-            .where('duplicate', '==', False)
-            .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
-        ).get()
-
-        completed_reqs = (
-            firestore_client.collection(
-                'projects', project_id, 'versions', version, 'requirements'
-            )
-            .where('deleted', '==', False)
-            .where('duplicate', '==', False)
-            .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
-            .where('testcase_status', '==', 'TESTCASES_CREATION_COMPLETE')
-        ).get()
-
-        if len(unexcluded_reqs) == len(completed_reqs):
-            firestore_client.document(
-                'projects', project_id, 'versions', version
-            ).update({'status': 'CONFIRM_TESTCASES'})
+        check_completed_status(firestore_client, project_id, version)
+        
 
         return (
             json.dumps(
