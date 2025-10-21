@@ -195,6 +195,7 @@ def generate_test_cases(request):
                         **tc,
                         'testcase_id': tc_id,
                         'requirement_id': requirement_id,
+                        'change_analysis_status': 'NEW',
                         'toolCreated': False,
                         'toolIssueLink': '',
                         'deleted': False,
@@ -247,7 +248,9 @@ def generate_test_cases(request):
 
     except Exception as e:
         logging.exception(f'Error processing task for requirement {requirement_id}')
+
         _update_requirement_status(
             project_id, version, requirement_id, 'ERR_TESTCASE_CREATION'
         )
+
         return {'error': str(e)}, 500

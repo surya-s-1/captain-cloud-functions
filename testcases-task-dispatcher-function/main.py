@@ -116,7 +116,12 @@ def process_for_testcases(request):
                 tasks_client.create_task(parent=QUEUE_NAME, task=task)
 
                 firestore_client.document(
-                    f'projects/{project_id}/versions/{version}/requirements/{req_doc.id}'
+                    'projects',
+                    project_id,
+                    'versions',
+                    version,
+                    'requirements',
+                    req_doc.id,
                 ).update({'testcase_status': 'TESTCASES_CREATION_QUEUED'})
 
                 docs_to_update.append(req_doc.id)
