@@ -17,6 +17,8 @@ FIRESTORE_DATABASE = os.environ.get('FIRESTORE_DATABASE')
 GENAI_MODEL = os.environ.get('GENAI_MODEL')
 FIRESTORE_COMMIT_CHUNK = int(os.environ.get('FIRESTORE_COMMIT_CHUNK', '450'))
 
+EXCLUDED_CHANGE_STATUSES = ['IGNORED', 'DEPRECATED', 'UNCHANGED']
+
 # =====================
 # Clients
 # =====================
@@ -169,9 +171,13 @@ def generate_test_cases(request):
             project_id, version, requirement_id, 'TESTCASES_CREATION_STARTED'
         )
 
-        testcases_query = firestore_client.collection(
-            'projects', project_id, 'versions', version, 'testcases'
-        ).where('requirement_id', '==', req_data.get('requirement_id')).select(['testcase_id'])
+        testcases_query = (
+            firestore_client.collection(
+                'projects', project_id, 'versions', version, 'testcases'
+            )
+            .where('requirement_id', '==', req_data.get('requirement_id'))
+            .select(['testcase_id'])
+        )
 
         testcases_query_res = testcases_query.get()
 
@@ -193,12 +199,14 @@ def generate_test_cases(request):
             tc_id = f'{requirement_id}-TC-{i}'
             testcase_docs.append(
                 (
-                    firestore_client.collection('projects')
-                    .document(project_id)
-                    .collection('versions')
-                    .document(version)
-                    .collection('testcases')
-                    .document(tc_id),
+                    firestore_client.document(
+                        'projects',
+                        project_id,
+                        'versions',
+                        version,
+                        'testcases',
+                        tc_id
+                    ),
                     {
                         **tc,
                         'testcase_id': tc_id,
@@ -216,6 +224,7 @@ def generate_test_cases(request):
         # Bulk Firestore write
         try:
             total_written = _firestore_commit_many(testcase_docs)
+
         except Exception as e:
             logging.error(f'Firestore write failed for {requirement_id}: {e}')
             return {'error': 'Saving to DB failed.'}, 500
@@ -228,24 +237,29 @@ def generate_test_cases(request):
             project_id, version, requirement_id, 'TESTCASES_CREATION_COMPLETE'
         )
 
-        collection_ref = firestore_client.collection(
-            'projects', project_id, 'versions', version, 'requirements'
-        )
-        requirements = [
-            doc.to_dict() for doc in collection_ref.get() if doc.get('deleted') != True
-        ]
-
-        if len(requirements) == len(
-            [
-                req
-                for req in requirements
-                if req.get('testcase_status', '') == 'TESTCASES_CREATION_COMPLETE'
-            ]
-        ):
-            version_ref = firestore_client.document(
-                'projects', project_id, 'versions', version
+        unexcluded_reqs = (
+            firestore_client.collection(
+                'projects', project_id, 'versions', version, 'requirements'
             )
-            version_ref.update({'status': 'CONFIRM_TESTCASES'})
+            .where('deleted', '==', False)
+            .where('duplicate', '==', False)
+            .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
+        ).get()
+
+        completed_reqs = (
+            firestore_client.collection(
+                'projects', project_id, 'versions', version, 'requirements'
+            )
+            .where('deleted', '==', False)
+            .where('duplicate', '==', False)
+            .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
+            .where('testcase_status', '==', 'TESTCASES_CREATION_COMPLETE')
+        ).get()
+
+        if len(unexcluded_reqs) == len(completed_reqs):
+            firestore_client.document(
+                'projects', project_id, 'versions', version
+            ).update({'status': 'CONFIRM_TESTCASES'})
 
         return (
             json.dumps(
