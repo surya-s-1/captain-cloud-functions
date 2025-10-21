@@ -57,9 +57,9 @@ def process_for_testcases(request):
         if not project_id or not version:
             return {'error': 'Missing project_id or version'}, 400
 
-        logging.info(f'Start orchestration for project={project_id}, version={version}')
+        logging.info(f'Start orchestration for project {project_id}, version {version}')
 
-        firestore_client.document(f'projects/{project_id}/versions/{version}').update(
+        firestore_client.document('projects', project_id, 'versions', version).update(
             {'testcase_status': 'START_TESTCASE_CREATION'}
         )
 
@@ -70,17 +70,46 @@ def process_for_testcases(request):
         query = (
             requirements_ref.where('deleted', '==', False)
             .where('duplicate', '==', False)
-            .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
-            .select(
-                [
-                    'requirement_id',
-                    'testcase_status',
-                ]
-            )
+            .select(['requirement_id', 'change_analysis_status', 'testcase_status'])
         )
 
         requirements_to_process = query.get()
         requirements_to_process = [r.to_dict() for r in requirements_to_process]
+
+        for r in requirements_to_process:
+            try:
+                if (
+                    r.get('requirement_id', None)
+                    and r.get('change_analysis_status', '') in EXCLUDED_CHANGE_STATUSES
+                ):
+                    batch = firestore_client.batch()
+
+                    testcases_to_update = (
+                        firestore_client.collection(
+                            'projects', project_id, 'versions', version, 'testcases'
+                        )
+                        .where('requirement_id', '==', r.get('requirement_id'))
+                        .get()
+                    )
+
+                    for t in testcases_to_update:
+                        t_id = t.id
+                        batch.update(
+                            firestore_client.document(
+                                'projects',
+                                project_id,
+                                'versions',
+                                version,
+                                'testcases',
+                                t_id,
+                            ),
+                            {'change_analysis_status': 'DEPRECATED'},
+                        )
+
+                    batch.commit()
+            except Exception as e:
+                logging.exception(f'Error when updating testcases for {r.id}: {e}')
+                continue
 
         requirements_to_process = [
             r
@@ -93,26 +122,31 @@ def process_for_testcases(request):
         docs_to_update = []
 
         for req_doc in requirements_to_process:
-            payload = {
-                'project_id': project_id,
-                'version': version,
-                'requirement_id': req_doc.id,
-            }
-
-            task = {
-                'http_request': {
-                    'http_method': 'POST',
-                    'url': WORKER_URL,
-                    'body': json.dumps(payload).encode('utf-8'),
-                    'headers': {'Content-Type': 'application/json'},
-                    'oidc_token': {
-                        'service_account_email': CLOUD_TASKS_SERVICE_ACCOUNT,
-                        'audience': WORKER_URL,
-                    },
-                }
-            }
+            if not req_doc.get('requirement_id', None):
+                continue
 
             try:
+                req_id = req_doc.get('requirement_id')
+
+                payload = {
+                    'project_id': project_id,
+                    'version': version,
+                    'requirement_id': req_id,
+                }
+
+                task = {
+                    'http_request': {
+                        'http_method': 'POST',
+                        'url': WORKER_URL,
+                        'body': json.dumps(payload).encode('utf-8'),
+                        'headers': {'Content-Type': 'application/json'},
+                        'oidc_token': {
+                            'service_account_email': CLOUD_TASKS_SERVICE_ACCOUNT,
+                            'audience': WORKER_URL,
+                        },
+                    }
+                }
+
                 tasks_client.create_task(parent=QUEUE_NAME, task=task)
 
                 firestore_client.document(
@@ -121,13 +155,13 @@ def process_for_testcases(request):
                     'versions',
                     version,
                     'requirements',
-                    req_doc.id,
+                    req_id,
                 ).update({'testcase_status': 'TESTCASES_CREATION_QUEUED'})
 
-                docs_to_update.append(req_doc.id)
+                docs_to_update.append(req_id)
 
             except Exception as e:
-                logging.error(f'Failed to enqueue task for {req_doc.id}: {e}')
+                logging.error(f'Failed to enqueue task for {req_id}: {e}')
                 # The loop continues to the next requirement
 
         return (
