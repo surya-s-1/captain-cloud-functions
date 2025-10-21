@@ -169,11 +169,19 @@ def generate_test_cases(request):
             project_id, version, requirement_id, 'TESTCASES_CREATION_STARTED'
         )
 
+        testcases_query = firestore_client.collection(
+            'projects', project_id, 'versions', version, 'testcases'
+        ).where('requirement_id', '==', req_data.get('requirement_id')).select(['testcase_id'])
+
+        testcases_query_res = testcases_query.get()
+
+        start_num = len(testcases_query_res) + 1
+
         # Generate test cases using Gemini
         try:
             testcases = _generate_test_cases(req_data)
         except Exception as e:
-            logging.error(f'Gemini call failed for {requirement_id}: {e}')
+            logging.exception(f'Gemini call failed for {requirement_id}: {e}')
             _update_requirement_status(
                 project_id, version, requirement_id, 'ERR_GEMINI_CALL'
             )
@@ -181,7 +189,7 @@ def generate_test_cases(request):
 
         # Prepare test case documents for batch write
         testcase_docs = []
-        for i, tc in enumerate(testcases, start=1):
+        for i, tc in enumerate(testcases, start=start_num):
             tc_id = f'{requirement_id}-TC-{i}'
             testcase_docs.append(
                 (
