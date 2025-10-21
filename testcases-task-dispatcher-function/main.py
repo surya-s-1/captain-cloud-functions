@@ -67,14 +67,16 @@ def process_for_testcases(request):
             'projects', project_id, 'versions', version, 'requirements'
         )
 
-        query = requirements_ref.where('deleted', '!=', True).select(
-            [
-                'requirement_id',
-                'deleted',
-                'duplicate',
-                'change_analysis_status',
-                'testcase_status',
-            ]
+        query = (
+            requirements_ref.where('deleted', '==', False)
+            .where('duplicate', '==', False)
+            .where('change_analysis_status', 'not-in', EXCLUDED_CHANGE_STATUSES)
+            .select(
+                [
+                    'requirement_id',
+                    'testcase_status',
+                ]
+            )
         )
 
         requirements_to_process = query.get()
@@ -83,9 +85,7 @@ def process_for_testcases(request):
         requirements_to_process = [
             r
             for r in requirements_to_process
-            if r.get('duplicate', '') != True
-            and r.get('change_analysis_status', '') not in EXCLUDED_CHANGE_STATUSES
-            and r.get('testcase_status', '') not in EXCLUDED_TESTCASE_STATUSES
+            if r.get('testcase_status', '') not in EXCLUDED_TESTCASE_STATUSES
         ]
 
         logging.info(f'Found {len(requirements_to_process)} requirements to enqueue.')
