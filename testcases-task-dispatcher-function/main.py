@@ -146,7 +146,14 @@ def process_for_testcases(request):
                                 'testcases',
                                 t_id,
                             ),
-                            {'change_analysis_status': 'UNCHANGED'},
+                            {
+                                'change_analysis_status': (
+                                    'UNCHANGED'
+                                    if t.to_dict().get('change_analysis_status', '')
+                                    in ['NEW', 'UNCHANGED']
+                                    else 'DEPRECATED'
+                                )
+                            },
                         )
                         count += 1
 
