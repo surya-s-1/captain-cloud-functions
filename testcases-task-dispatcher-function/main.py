@@ -85,7 +85,8 @@ def process_for_testcases(request):
 
                 if (
                     r.get('requirement_id', None)
-                    and r.get('change_analysis_status', '') in DEPRECATED_CHANGE_STATUSES
+                    and r.get('change_analysis_status', '')
+                    in DEPRECATED_CHANGE_STATUSES
                 ):
                     testcases_to_update = (
                         firestore_client.collection(
@@ -118,8 +119,7 @@ def process_for_testcases(request):
 
                 if (
                     r.get('requirement_id', None)
-                    and r.get('change_analysis_status', '')
-                    in UNCHANGED_CHANGE_STATUSES
+                    and r.get('change_analysis_status', '') in UNCHANGED_CHANGE_STATUSES
                 ):
                     testcases_to_update = (
                         firestore_client.collection(
@@ -134,7 +134,7 @@ def process_for_testcases(request):
                             batch.commit()
                             batch = firestore_client.batch()
                             count = 0
-                        
+
                         t_id = t.id
 
                         batch.update(
@@ -146,15 +146,13 @@ def process_for_testcases(request):
                                 'testcases',
                                 t_id,
                             ),
-                            {
-                                'change_analysis_status': 'UNCHANGED'
-                            },
+                            {'change_analysis_status': 'UNCHANGED'},
                         )
                         count += 1
-                
+
                 if count > 0:
                     batch.commit()
-            
+
             except Exception as e:
                 logging.exception(f'Error when updating testcases for {r.id}: {e}')
                 continue
@@ -163,6 +161,7 @@ def process_for_testcases(request):
             r
             for r in requirements_to_process
             if r.get('testcase_status', '') not in EXCLUDED_TESTCASE_STATUSES
+            and r.get('change_analysis_status', '') not in EXCLUDED_CHANGE_STATUSES
         ]
 
         logging.info(f'Found {len(requirements_to_process)} requirements to enqueue.')
