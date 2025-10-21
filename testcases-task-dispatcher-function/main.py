@@ -5,6 +5,9 @@ import logging
 import functions_framework
 from google.cloud import firestore, tasks_v2
 
+# from dotenv import load_dotenv
+# load_dotenv()
+
 # =====================
 # Environment variables
 # =====================
@@ -20,6 +23,13 @@ firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
 tasks_client = tasks_v2.CloudTasksClient()
 logging.basicConfig(level=logging.INFO)
 
+EXCLUDED_CHANGE_STATUSES = ['IGNORED', 'DEPRECATED', 'UNCHANGED']
+EXCLUDED_TESTCASE_STATUSES = [
+    'TESTCASES_CREATION_QUEUED',
+    'TESTCASES_CREATION_STARTED',
+    'TESTCASES_CREATION_COMPLETE',
+]
+
 
 # =======================================================
 # Cloud Function: HTTP Orchestrator
@@ -32,6 +42,12 @@ def process_for_testcases(request):
     '''
     try:
         request_json = request.get_json(silent=True)
+        # Mock data
+        # request_json = {
+        #     'project_id': 'pJ6Q09OchNLLE86eUu1f',
+        #     'version': 'v2'
+        # }
+
         if not request_json:
             return {'error': 'JSON body not provided.'}, 400
 
@@ -51,20 +67,21 @@ def process_for_testcases(request):
             'projects', project_id, 'versions', version, 'requirements'
         )
 
-        query = requirements_ref.where('deleted', '!=', True)
-        all_requirements = query.get()
+        query = (
+            requirements_ref.where('deleted', '!=', True)
+            .select(['requirement_id', 'deleted', 'duplicate', 'change_analysis_status', 'testcase_status'])
+        )
 
-        requirements_to_process = []
-        excluded_statuses = [
-            'TESTCASES_CREATION_QUEUED',
-            'TESTCASES_CREATION_STARTED',
-            'TESTCASES_CREATION_COMPLETE',
+        requirements_to_process = query.get()
+        requirements_to_process = [r.to_dict() for r in requirements_to_process]
+
+        requirements_to_process = [
+            r
+            for r in requirements_to_process
+            if r.get('duplicate', '') != True
+            and r.get('change_analysis_status', '') not in EXCLUDED_CHANGE_STATUSES
+            and r.get('testcase_status', '') not in EXCLUDED_TESTCASE_STATUSES
         ]
-
-        for doc in all_requirements:
-            doc_data = doc.to_dict()
-            if doc_data.get('testcase_status') not in excluded_statuses:
-                requirements_to_process.append(doc)
 
         logging.info(f'Found {len(requirements_to_process)} requirements to enqueue.')
 
