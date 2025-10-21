@@ -103,7 +103,11 @@ def process_for_testcases(request):
                                 'testcases',
                                 t_id,
                             ),
-                            {'change_analysis_status': 'DEPRECATED'},
+                            {
+                                'change_analysis_status': 'UNCHANGED' 
+                                if r.get('change_analysis_status', '') == 'UNCHANGED'
+                                else 'DEPRECATED'
+                            }
                         )
 
                     batch.commit()
