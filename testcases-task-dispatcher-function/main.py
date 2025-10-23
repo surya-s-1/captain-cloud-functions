@@ -103,6 +103,7 @@ def process_for_testcases(request):
                             count = 0
 
                         t_id = t.id
+                        t_dict = t.to_dict()
 
                         batch.update(
                             firestore_client.document(
@@ -114,8 +115,9 @@ def process_for_testcases(request):
                                 t_id,
                             ),
                             {
+                                'title': f'[DEPRECATED] {t_dict.get('title', '')}',
                                 'change_analysis_status': 'DEPRECATED',
-                                'change_analysis_status_reason': 'Its requirement was either MODIFIED?DEPRECATED/IGNORED',
+                                'change_analysis_status_reason': 'Its requirement was either MODIFIED/DEPRECATED/IGNORED',
                             },
                         )
                         count += 1
