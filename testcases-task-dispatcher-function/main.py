@@ -104,6 +104,7 @@ def process_for_testcases(request):
 
                         t_id = t.id
                         t_dict = t.to_dict()
+                        title: str = t_dict.get('title', '')
 
                         batch.update(
                             firestore_client.document(
@@ -115,7 +116,7 @@ def process_for_testcases(request):
                                 t_id,
                             ),
                             {
-                                'title': f'[DEPRECATED] {t_dict.get('title', '')}',
+                                'title': f'[DEPRECATED] {title}' if not title.startswith('[DEPRECATED]') else title,
                                 'change_analysis_status': 'DEPRECATED',
                                 'change_analysis_status_reason': 'Its requirement was either MODIFIED/DEPRECATED/IGNORED',
                             },
