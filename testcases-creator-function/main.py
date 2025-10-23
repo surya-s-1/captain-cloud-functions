@@ -242,6 +242,7 @@ def generate_test_cases(request):
                         'created_at': firestore.SERVER_TIMESTAMP,
                         'change_analysis_status': 'NEW',
                         'toolCreated': False,
+                        'toolIssueKey': '',
                         'toolIssueLink': '',
                         'deleted': False,
                         'datasets': [],
