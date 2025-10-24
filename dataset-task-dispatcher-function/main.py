@@ -4,6 +4,9 @@ import logging
 import functions_framework
 from google.cloud import firestore, tasks_v2
 
+# from dotenv import load_dotenv
+# load_dotenv()
+
 logging.basicConfig(level=logging.INFO)
 
 # Environment
@@ -33,30 +36,26 @@ def dispatcher_function(request):
 
         project_id = body.get('project_id')
         version = body.get('version')
+
         if not project_id or not version:
             return ('Bad request: project_id and version required', 400)
 
-        collection_ref = firestore_client.collection(
-            f'projects/{project_id}/versions/{version}/testcases'
+        collection_ref = (
+            firestore_client.collection(
+                f'projects/{project_id}/versions/{version}/testcases'
+            )
+            .where('deleted', '==', False)
+            .where('change_analysis_status', 'in', ['NEW', 'UNCHANGED'])
+            .select(['testcase_id', 'dataset_status'])
+            .order_by('testcase_id', 'ASCENDING')
         )
-        docs = list(collection_ref.stream())
 
-        # Filter out deleted docs + excluded statuses
-        valid_testcases = []
-        for d in docs:
-            data = d.to_dict() or {}
-            
-            if data.get('deleted', False):
-                continue
+        docs = collection_ref.get()
 
-            status = data.get('dataset_status')
-            if status in EXCLUDED_STATUSES:
-                logging.info('Skipping testcase %s due to dataset_status=%s', d.id, status)
-                continue
-
-            valid_testcases.append(d)
+        valid_testcases = [d.to_dict() for d in docs if d.get('dataset_status') not in EXCLUDED_STATUSES]
 
         if not valid_testcases:
+            logging.info('No eligible testcases found')
             return (
                 json.dumps(
                     {
@@ -73,12 +72,17 @@ def dispatcher_function(request):
         )
 
         enqueued = []
-        for d in valid_testcases:
-            tcid = d.id
+
+        for tc in valid_testcases:
+            if not tc.get('testcase_id'):
+                continue
+
+            tc_id = tc.get('testcase_id')
+
             task_payload = {
                 'project_id': project_id,
                 'version': version,
-                'testcase_id': tcid,
+                'testcase_id': tc_id,
             }
 
             task = {
@@ -89,21 +93,23 @@ def dispatcher_function(request):
                     'body': json.dumps(task_payload).encode(),
                     'oidc_token': {
                         'service_account_email': CLOUD_TASKS_SERVICE_ACCOUNT,
-                        'audience': WORKER_URL
-                    }
+                        'audience': WORKER_URL,
+                    },
                 }
             }
 
             try:
                 tasks_client.create_task(request={'parent': parent, 'task': task})
-                logging.info('Enqueued task for testcase %s', tcid)
+                logging.info('Enqueued task for testcase %s', tc_id)
 
-                # ✅ Update Firestore status after successful enqueue
-                d.reference.update({'dataset_status': 'DATASET_GENERATION_QUEUED'})
-                enqueued.append(tcid)
+                firestore_client.document(
+                    'projects', project_id, 'versions', version, 'testcases', tc_id
+                ).update({'dataset_status': 'DATASET_GENERATION_QUEUED'})
+
+                enqueued.append(tc_id)
 
             except Exception as enqueue_err:
-                logging.error('Failed to enqueue testcase %s: %s', tcid, enqueue_err)
+                logging.exception('Failed to enqueue testcase %s: %s', tc_id, enqueue_err)
 
         return (
             json.dumps(
@@ -119,5 +125,9 @@ def dispatcher_function(request):
         )
 
     except Exception as e:
+
         logging.exception('Dispatcher failed: %s', e)
+
         return (f'Internal server error: {e}', 500)
+
+# dispatcher_function(None)
