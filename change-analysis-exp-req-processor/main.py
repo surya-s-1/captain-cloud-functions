@@ -21,8 +21,8 @@ PROJECT_ID = os.getenv('PROJECT_ID')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
-REQ_UNCHANGED_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
-REQ_MODIFIED_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
+REQ_UNCHANGED_SIM_THRESHOLD = float(os.getenv('REQ_UNCHANGED_SIM_THRESHOLD'))
+REQ_MODIFIED_SIM_THRESHOLD = float(os.getenv('REQ_MODIFIED_SIM_THRESHOLD'))
 REQ_DEPRECATED_SIM_THRESHOLD = REQ_MODIFIED_SIM_THRESHOLD
 MAX_WORKERS = 16
 FIRESTORE_COMMIT_CHUNK = 450
@@ -184,7 +184,7 @@ def _load_newly_uploaded_exp_requirements(
     for i, (r, embedding_vector) in enumerate(
         zip(normalized_list, embedding_vectors), start=1
     ):
-        requirement_id = f'{version}-REQ-E-{i:03d}'
+        requirement_id = f'v{version}-REQ-E-{i:03d}'
         final_list.append(
             {
                 'requirement_id': requirement_id,
@@ -280,6 +280,7 @@ def _load_existing_exp_requirements(
             existing_reqs.append(data)
     
     print(f'Loaded {len(existing_reqs)} existing requirements.')
+
     return existing_reqs
 
 
@@ -287,7 +288,9 @@ def _mark_new_reqs_change_status(
     new_exp_reqs: List[Dict[str, Any]], existing_exp_reqs: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     '''Compares new explicit requirements against existing ones to mark status (UNCHANGED/MODIFIED/NEW).'''
+
     print(f'Starting change detection for {len(new_exp_reqs)} new texts...')
+
     old_ids_checked = set()
 
     for new_req in new_exp_reqs:
@@ -298,6 +301,7 @@ def _mark_new_reqs_change_status(
         for old_req in existing_exp_reqs:
             if old_req['source_type'] != SOURCE_TYPE_EXPLICIT:
                 continue
+
             sim_score = _cosine_similarity(new_req['embedding'], old_req['embedding'])
 
             if sim_score > max_sim_score:
@@ -306,15 +310,29 @@ def _mark_new_reqs_change_status(
 
         if max_sim_score >= REQ_UNCHANGED_SIM_THRESHOLD:
             new_req['change_analysis_status'] = CHANGE_STATUS_UNCHANGED
+            new_req['change_analysis_status_reason'] = (
+                'Did not detect any major changes in updated requirements'
+            )
             new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
+            new_req['testcase_status'] = best_match.get('testcase_status', '')
             old_ids_checked.add(best_match['requirement_id'])
+
         elif max_sim_score >= REQ_MODIFIED_SIM_THRESHOLD:
             new_req['change_analysis_status'] = CHANGE_STATUS_MODIFIED
+            new_req['change_analysis_status_reason'] = (
+                'Detected considerable modifications in updated requirements'
+            )
             new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
+            new_req['testcase_status'] = ''
             old_ids_checked.add(best_match['requirement_id'])
+
         else:
             new_req['change_analysis_status'] = CHANGE_STATUS_NEW
+            new_req['change_analysis_status_reason'] = (
+                'Detected only in updated requirements'
+            )
             new_req['change_analysis_near_duplicate_id'] = None
+            new_req['testcase_status'] = ''
 
     print(
         f'Statuses: UNCHANGED={len([r for r in new_exp_reqs if r['change_analysis_status'] == CHANGE_STATUS_UNCHANGED])},'
@@ -328,6 +346,7 @@ def _mark_new_reqs_change_status(
         for r in existing_exp_reqs
         if r['requirement_id'] not in old_ids_checked and r['source_type'] == SOURCE_TYPE_EXPLICIT
     ]
+
     return new_exp_reqs, old_exp_to_check
 
 
@@ -370,10 +389,12 @@ def _mark_deprecated_in_firestore(
 
 
 def _mark_unchanged_modified_new_in_firestore(
-    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int = 1
+    project_id: str, version: str, requirements: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     '''Persists new, modified, and unchanged explicit requirements to Firestore.'''
+
     print(f'Persisting {len(requirements)} explicit requirements to firestore...')
+
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
     )
@@ -381,9 +402,8 @@ def _mark_unchanged_modified_new_in_firestore(
     doc_insertions_tuples_list = []
     doc_updates_tuples_list = []
     written_reqs = []
-    current_index = start_id
 
-    for req in requirements:
+    for idx, req in enumerate(requirements):
         req_source_type = req.get('source_type', '')
         req_change_status = req.get('change_analysis_status', 'NEW')
         change_analysis_near_duplicate_id = req.get(
@@ -393,19 +413,17 @@ def _mark_unchanged_modified_new_in_firestore(
         if req_source_type == SOURCE_TYPE_EXPLICIT:
             # Case 1: EXPLICIT NEW (New insertions)
             if req_change_status == CHANGE_STATUS_NEW:
-                req_id = f'{version}-REQ-E-{current_index:03d}'
+                req_id = req.get('requirement_id', f'v{version}-REQ-E-{idx:03d}')
 
                 doc_data = {
                     **req,
                     'requirement_id': req_id,
-                    'testcase_status': '',
-                    'change_analysis_status_reason': 'Detected only in updated requirements',
                     'created_at': firestore.SERVER_TIMESTAMP,
                 }
 
                 doc_ref = requirements_collection_ref.document(req_id)
                 doc_insertions_tuples_list.append((doc_ref, doc_data))
-                current_index += 1
+
                 req['requirement_id'] = req_id
 
             # Case 2: EXPLICIT MODIFIED/UNCHANGED (Update existing document)
@@ -417,42 +435,13 @@ def _mark_unchanged_modified_new_in_firestore(
                 doc_data = {
                     **req,
                     'requirement_id': req_id,
-                    'change_analysis_status_reason': (
-                        'Did not detect any major changes in updated requirements'
-                        if req_change_status == CHANGE_STATUS_UNCHANGED
-                        else 'Detected considerable modifications in updated requirements'
-                    ),
-                    'testcase_status': (
-                        ''
-                        if req_change_status == CHANGE_STATUS_MODIFIED
-                        else req.get('testcase_status', '')
-                    ),
+                    'updated_at': firestore.SERVER_TIMESTAMP
                 }
 
                 doc_ref = requirements_collection_ref.document(req_id)
 
-                # Prepare update payload (use batch.update() structure for clarity)
-                update_data = {
-                    'requirement': doc_data.get('requirement', ''),
-                    'embedding': doc_data.get('embedding', []),
-                    'requirement_type': doc_data.get('requirement_type', ''),
-                    'deleted': doc_data.get('deleted', False),
-                    'duplicate': doc_data.get('duplicate', False),
-                    'change_analysis_status': doc_data.get(
-                        'change_analysis_status', ''
-                    ),
-                    'change_analysis_near_duplicate_id': doc_data.get(
-                        'change_analysis_near_duplicate_id', ''
-                    ),
-                    'change_analysis_status_reason': doc_data.get(
-                        'change_analysis_status_reason', ''
-                    ),
-                    'sources': doc_data.get('sources', []),
-                    'testcase_status': doc_data.get('testcase_status', ''),
-                    'updated_at': firestore.SERVER_TIMESTAMP,
-                }
+                doc_updates_tuples_list.append((doc_ref, doc_data))
 
-                doc_updates_tuples_list.append((doc_ref, update_data))
                 req['requirement_id'] = req_id
             else:
                 print(
@@ -576,8 +565,8 @@ def explicit_req_processor_change_analysis(request):
         # Mock data for local testing
         # payload = {
         #     'project_id': 'abc',
-        #     'version': 'v2',
-        #     'requirements_p1_url': 'gs://genai-sage/projects/abc/v_v2/extractions/requirements-phase-1.json',
+        #     'version': '2',
+        #     'requirements_p1_url': 'gs://genai-sage/projects/abc/v_2/extractions/requirements-phase-1.json',
         # }
         project_id = payload.get('project_id')
         version = payload.get('version')
@@ -597,15 +586,16 @@ def explicit_req_processor_change_analysis(request):
         _update_version_status(project_id, version, 'START_REQ_EXTRACT_P2')
 
         existing_exp_reqs = _load_existing_exp_requirements(project_id, version)
-        print(f'Loaded {len(existing_exp_reqs)} existing explicit requirements.')
 
-        new_exp_reqs = _load_newly_uploaded_exp_requirements(version, reqs_url)
+        newly_uploaded_exp_reqs = _load_newly_uploaded_exp_requirements(
+            version, reqs_url
+        )
 
         _update_version_status(project_id, version, 'START_CHANGE_DETECTION')
 
         # 1. Compare new list against old list (Find UNCHANGED, MODIFIED, NEW)
         new_exp_reqs, old_exp_to_check = _mark_new_reqs_change_status(
-            new_exp_reqs, existing_exp_reqs
+            newly_uploaded_exp_reqs, existing_exp_reqs
         )
 
         # 2. Mark old unmatched explicit requirements as DEPRECATED
@@ -622,6 +612,7 @@ def explicit_req_processor_change_analysis(request):
         written_exp_reqs = _mark_unchanged_modified_new_in_firestore(
             project_id, version, new_exp_reqs
         )
+
         print(f'New/Modified/Unchanged Explicit writes => {len(written_exp_reqs)}')
 
         _update_version_status(project_id, version, 'START_DEDUPE_EXPLICIT')
@@ -651,7 +642,7 @@ def explicit_req_processor_change_analysis(request):
 
         if project_id and version:
             _update_version_status(project_id, version, 'ERR_CHANGE_ANALYSIS_EXPLICIT')
-        
+
         return (
             json.dumps(
                 {

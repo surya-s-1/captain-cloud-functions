@@ -96,10 +96,10 @@ def copy_subcollection_with_history(
 # --- Example Usage ---
 # NOTE: Replace these with your actual document paths and subcollection ID
 
-PREV_VERSION = "v1"
-SOURCE_DOC_PATH = "projects/abc/versions/v1"
+PREV_VERSION = "1"
+SOURCE_DOC_PATH = "projects/jETGtm44UTuqd4XNnA34/versions/1"
 SUBCOLLECTION_ID = "requirements"
-TARGET_DOC_PATH = "projects/abc/versions/v2"
+TARGET_DOC_PATH = "projects/jETGtm44UTuqd4XNnA34/versions/2"
 
 copy_subcollection_with_history(
     SOURCE_DOC_PATH, SUBCOLLECTION_ID, TARGET_DOC_PATH, PREV_VERSION, db
