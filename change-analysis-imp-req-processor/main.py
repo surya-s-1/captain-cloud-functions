@@ -204,25 +204,26 @@ def _refine_requirement_with_gemini(text: str) -> str:
         return text
 
 
-def _refine_candidates_parallel(
-    implicit_candidates: List[Dict[str, Any]],
+def _refine_disc_results(
+    results: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     '''Runs Gemini refinement on a list of candidates in parallel.'''
-    print(
-        f'Starting parallel refinement of {len(implicit_candidates)} candidates with Gemini...'
-    )
-    texts_to_refine = [res.get('content', '') for res in implicit_candidates]
-    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        refined_texts = list(ex.map(_refine_requirement_with_gemini, texts_to_refine))
 
-    for candidate, refined_text in zip(implicit_candidates, refined_texts):
-        candidate['raw_snippet'] = candidate.get(
-            'snippet', candidate.get('content', '')
+    print(f'Starting parallel refinement of {len(results)} candidates with Gemini...')
+
+    snippets_to_refine = [res.get('snippet', '') for res in results]
+
+    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        refined_texts = list(
+            ex.map(_refine_requirement_with_gemini, snippets_to_refine)
         )
-        candidate['content'] = refined_text
-        candidate['snippet'] = refined_text
+
+    for candidate, refined_text in zip(results, refined_texts):
+        candidate['refined_text'] = refined_text
+
     print('Refinement complete.')
-    return implicit_candidates
+
+    return results
 
 
 # ===================== # Implicit Core Functions # =====================
@@ -264,7 +265,6 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
             processed.append(
                 {
                     'relevance': relevance,
-                    'content': result.chunk.content,
                     'regulation': regulation,
                     'filename': filename,
                     'page_start': result.chunk.page_span.page_start,
@@ -304,78 +304,77 @@ def _query_discovery_engine_parallel(
     return all_results
 
 
-def _format_discovery_results(
-    discovery_results: List[Dict[str, Any]],
+def _format_disc_results(
+    version: str,
+    results: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     '''Transforms Discovery Engine results (refined by Gemini) into persistence format.'''
+
     formatted_list = []
-    texts_to_embed = [
-        res.get('snippet', res.get('content')) for res in discovery_results
-    ]
+    texts_to_embed = [res.get('refined_text', '') for res in results]
 
     with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
 
-    for i, (res, embedding_vector) in enumerate(
-        zip(discovery_results, embedding_vectors)
-    ):
-        req_text = res.get('snippet', res.get('content'))
-        explicit_requirement_id = res.pop('explicit_requirement_id', None)
+    for idx, (res, embedding_vector) in enumerate(zip(results, embedding_vectors)):
+        parent_req = res.pop('explicit_requirement_id', None)
 
         formatted_list.append(
             {
-                'requirement': req_text,
-                'requirement_type': 'regulation',
-                'embedding': embedding_vector,
-                'exp_req_ids': (
-                    [explicit_requirement_id] if explicit_requirement_id else []
-                ),
-                'source_type': SOURCE_TYPE_IMPLICIT,
+                'requirement_id': f'v{version}-REQ-I-{idx:03d}',
+                'requirement': res.get('refined_text', ''),
+                'requirement_category': 'regulation',
+                'source_type': 'implicit',
+                'sources': [],
                 'deleted': False,
-                'duplicate': False,
+                'duplicate': False,  # Initialize to False
+                'near_duplicate_id': '',
+                'embedding': embedding_vector,
                 'change_analysis_status': CHANGE_STATUS_NEW,
+                'change_analysis_status_reason': 'Newly created',
+                'change_analysis_near_duplicate_id': '',
                 'regulations': [
                     {
-                        'regulation': res.get('regulation', 'N/A'),
+                        'regulation': res.get('regulation', 'NA'),
                         'source': {
-                            'filename': res.get('filename', 'N/A'),
-                            'page_start': res.get('page_start', 'N/A'),
-                            'page_end': res.get('page_end', 'N/A'),
-                            'snippet': req_text,
-                            'raw_snippet': res.get('raw_snippet', req_text),
+                            'filename': res.get('filename', 'NA'),
+                            'page_start': res.get('page_start', 'NA'),
+                            'page_end': res.get('page_end', 'NA'),
+                            'snippet': res.get('snippet', 'NA'),
                         },
                     }
                 ],
+                'parent_exp_req_ids': [parent_req] if parent_req else [],
+                'testcase_status': 'NOT_STARTED',
+                'updated_at': firestore.SERVER_TIMESTAMP,
+                'created_at': firestore.SERVER_TIMESTAMP,
             }
         )
     return formatted_list
 
 
-def _persist_requirements_to_firestore(
-    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int = 1
+def _write_reqs_to_firestore(
+    project_id: str, version: str, requirements: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
     '''Persists new implicit requirements to Firestore.'''
+
     print(f'Persisting {len(requirements)} implicit requirements to firestore...')
+
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
     )
+
     doc_insertions_tuples_list = []
+
     written_reqs = []
-    current_index = start_id
 
     for req in requirements:
         if req.get('source_type') == SOURCE_TYPE_IMPLICIT:
             doc_data = {**req, 'created_at': firestore.SERVER_TIMESTAMP}
-
-            # Generate new implicit ID
-            req_id = f'{version}-REQ-I-{current_index:03d}'
-            doc_data['requirement_id'] = req_id
-            doc_data['testcase_status'] = ''
+            req_id = req.get('requirement_id')
 
             doc_ref = requirements_collection_ref.document(req_id)
             doc_insertions_tuples_list.append((doc_ref, doc_data))
-            current_index += 1
-            req['requirement_id'] = req_id
 
             written_reqs.append(
                 {
@@ -384,7 +383,7 @@ def _persist_requirements_to_firestore(
                     'requirement': req.get('requirement', ''),
                     'embedding': req.get('embedding', []),
                     'duplicate': req.get('duplicate', False),
-                    'exp_req_ids': req.get('exp_req_ids', []),
+                    'parent_exp_req_ids': req.get('parent_exp_req_ids', []),
                     'change_analysis_status': req.get(
                         'change_analysis_status', CHANGE_STATUS_NEW
                     ),
@@ -392,8 +391,12 @@ def _persist_requirements_to_firestore(
             )
 
     if doc_insertions_tuples_list:
+
         print(f'Committing {len(doc_insertions_tuples_list)} INSERT/SET operations...')
+
         _firestore_commit_many(doc_insertions_tuples_list)
+
+    print(f'New Implicit writes (Discovery) => {len(written_reqs)}')
 
     return written_reqs
 
@@ -443,7 +446,11 @@ def _mark_duplicates(
         if best_match_id:
             # req_i is a duplicate of best_match_id (which could be an old original or a new original)
             duplicates_to_update.append(
-                (req_i['requirement_id'], best_match_id, req_i.get('exp_req_ids', []))
+                (
+                    req_i['requirement_id'],
+                    best_match_id,
+                    req_i.get('parent_exp_req_ids', []),
+                )
             )
             req_i['duplicate'] = True
 
@@ -454,7 +461,7 @@ def _mark_duplicates(
     print(f'Found {len(duplicates_to_update)} implicit duplicates to mark.')
     batch = firestore_client.batch()
 
-    for req_id, near_duplicate_id, exp_req_ids in duplicates_to_update:
+    for req_id, near_duplicate_id, parent_exp_req_ids in duplicates_to_update:
         # Mark the new/duplicate requirement as duplicate
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
@@ -464,7 +471,7 @@ def _mark_duplicates(
         )
 
         # Merge the source explicit IDs into the original implicit document
-        if exp_req_ids:
+        if parent_exp_req_ids:
             original_ref = firestore_client.document(
                 'projects',
                 project_id,
@@ -474,23 +481,27 @@ def _mark_duplicates(
                 near_duplicate_id,
             )
             batch.update(
-                original_ref, {'exp_req_ids': firestore.ArrayUnion(exp_req_ids)}
+                original_ref,
+                {'parent_exp_req_ids': firestore.ArrayUnion(parent_exp_req_ids)},
             )
 
     batch.commit()
 
     all_duplicates: List[Dict[str, Any]] = []
     all_originals: List[Dict[str, Any]] = []
+
     for req in newly_written_reqs:
         if req.get('duplicate', False):
             all_duplicates.append(req)
         else:
             all_originals.append(req)
 
+    print(f'Vector Dedupe (Implicit Only) => Marked {len(all_duplicates)} duplicates.')
+
     return all_duplicates, all_originals
 
 
-def get_current_explicit_statuses(project_id: str, version: str) -> Dict[str, str]:
+def _get_current_explicit_statuses(project_id: str, version: str) -> Dict[str, str]:
     '''Retrieves the current change_analysis_status for all active explicit requirements.'''
     exp_status_map = {}
     exp_reqs_query = (
@@ -567,7 +578,7 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
     batch.commit()
     print('Batch committed successfully.')
 
-    exp_status_map = get_current_explicit_statuses(project_id, version)
+    exp_status_map = _get_current_explicit_statuses(project_id, version)
 
     # Set of explicit IDs that are UNCHANGED
     unchanged_exp_ids = {
@@ -583,18 +594,18 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
         .where('deleted', '==', False)
         .where('duplicate', '==', False)
         .where('change_analysis_status', '!=', CHANGE_STATUS_IGNORED)
-        .select(['requirement_id', 'exp_req_ids'])
+        .select(['requirement_id', 'parent_exp_req_ids'])
     )
 
     updates = []  # (doc_ref, data)
 
     for doc in imp_reqs_query.stream():
         imp_data = doc.to_dict()
-        imp_id = imp_data['requirement_id']
-        parent_exp_ids = set(imp_data.get('exp_req_ids', []))
+        imp_req_id = imp_data['requirement_id']
+        parent_exp_req_ids = set(imp_data.get('parent_exp_req_ids', []))
 
         # Explicit IDs that currently exist and are linked
-        valid_linked_exp_ids = parent_exp_ids.intersection(exp_status_map.keys())
+        valid_linked_exp_ids = parent_exp_req_ids.intersection(exp_status_map.keys())
 
         # Explicit IDs that are linked and are UNCHANGED
         unchanged_links = valid_linked_exp_ids.intersection(unchanged_exp_ids)
@@ -603,21 +614,21 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
         new_status_reason = ''
         updated_data = {}
 
-        # --- If any of the exp_req_ids are in UNCHANGED state, Then the implicit requirement is UNCHANGED. ---
+        # --- If any of the parent_exp_req_ids are in UNCHANGED state, Then the implicit requirement is UNCHANGED. ---
         if unchanged_links:
             new_status = CHANGE_STATUS_UNCHANGED
-            new_status_reason = 'Atleast one of its original parent explicit requirements is UNCHANGED.'
+            new_status_reason = (
+                'Atleast one of its original parent explicit requirements is UNCHANGED.'
+            )
 
             # Prune: keep only the UNCHANGED links
-            exp_ids_to_keep = list(unchanged_links)
-            updated_data['exp_req_ids'] = exp_ids_to_keep
+            parent_exp_req_ids_to_keep = list(unchanged_links)
+            updated_data['parent_exp_req_ids'] = parent_exp_req_ids_to_keep
 
         # --- For Non-Unchanged Links ---
-        elif parent_exp_ids:
+        elif parent_exp_req_ids:
             new_status = CHANGE_STATUS_DEPRECATED
-            new_status_reason = (
-                'All of its original parent explicit requirements are either MODIFIED / DEPRECATED / IGNORED.'
-            )
+            new_status_reason = 'All of its original parent explicit requirements are either MODIFIED / DEPRECATED / IGNORED.'
 
         if new_status:
             updated_data['change_analysis_status'] = new_status
@@ -625,7 +636,7 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
             updated_data['updated_at'] = firestore.SERVER_TIMESTAMP
 
             doc_ref = firestore_client.document(
-                'projects', project_id, 'versions', version, 'requirements', imp_id
+                'projects', project_id, 'versions', version, 'requirements', imp_req_id
             )
             updates.append((doc_ref, updated_data))
 
@@ -659,43 +670,19 @@ def process_new_or_modified_implicit_search(project_id: str, version: str) -> No
         return
 
     # 2. Query Discovery Engine for implicit candidates (in parallel)
-    implicit_candidates = _query_discovery_engine_parallel(search_reqs)
+    disc_results = _query_discovery_engine_parallel(search_reqs)
 
     # 3. Refine candidates with Gemini (in parallel)
-    implicit_candidates = _refine_candidates_parallel(implicit_candidates)
+    refined_results = _refine_disc_results(disc_results)
 
     # 4. Format, embed, and set to SOURCE_TYPE_IMPLICIT type
-    implicit_reqs = _format_discovery_results(implicit_candidates)
-
-    # 5. Determine the next starting ID for implicit requirements (REQ-I-XXX)
-    last_imp_doc = (
-        firestore_client.collection(
-            'projects', project_id, 'versions', version, 'requirements'
-        )
-        .where('source_type', '==', SOURCE_TYPE_IMPLICIT)
-        .order_by('requirement_id', direction=firestore.Query.DESCENDING)
-        .limit(1)
-        .stream()
-    )
-
-    start_id = 1
-    for doc in last_imp_doc:
-        try:
-            last_id_str = doc.id.split('-')[-1]
-            start_id = int(last_id_str) + 1
-        except Exception:
-            pass
+    implicit_reqs = _format_disc_results(version, refined_results)
 
     # 6. Persist to Firestore (new insertions only)
-    written_imp_reqs = _persist_requirements_to_firestore(
-        project_id, version, implicit_reqs, start_id=start_id
-    )
-    print(f'New Implicit writes (Discovery) => {len(written_imp_reqs)}')
+    written_imp_reqs = _write_reqs_to_firestore(project_id, version, implicit_reqs)
 
     # 7. Deduplicate new implicit requirements against existing and themselves
-    dupe_imps, orig_imps = _mark_duplicates(project_id, version, written_imp_reqs)
-    
-    print(f'Vector Dedupe (Implicit Only) => Marked {len(dupe_imps)} duplicates.')
+    _mark_duplicates(project_id, version, written_imp_reqs)
 
 
 # ===================== # Main HTTP Function for Implicit Processing # =====================
@@ -736,9 +723,7 @@ def process_implicit_requirements(request):
         # Step A: Update status of existing implicit requirements based on explicit links
         update_existing_implicit_reqs(project_id, version)
 
-        _update_version_status(
-            project_id, version, 'START_IMPLICIT_DISCOVERY'
-        )
+        _update_version_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
 
         # Step B: Search and create new implicit requirements for NEW/MODIFIED explicit sources
         process_new_or_modified_implicit_search(project_id, version)
@@ -752,7 +737,7 @@ def process_implicit_requirements(request):
 
         if project_id and version:
             _update_version_status(project_id, version, 'ERR_CHANGE_ANALYSIS_IMPLICIT')
-        
+
         return (
             json.dumps(
                 {
@@ -762,5 +747,6 @@ def process_implicit_requirements(request):
             ),
             500,
         )
+
 
 # process_implicit_requirements(None)
