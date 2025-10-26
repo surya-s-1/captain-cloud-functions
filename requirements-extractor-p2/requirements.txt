@@ -1,7 +1,0 @@
-functions-framework==3.*
-google-cloud-storage==3.3.0
-google-cloud-firestore==2.21.0
-google-cloud-discoveryengine==0.13.11
-google-genai==1.32.0
-rapidfuzz>=3.9.0
-protobuf<6
