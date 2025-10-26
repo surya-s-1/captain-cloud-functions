@@ -173,7 +173,7 @@ def _generate_embedding(text: str) -> List[float]:
         return []
 
 
-def _load_and_normalize_exp_req(obj_url: str) -> List[Dict[str, Any]]:
+def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, Any]]:
     print('Starting explicit requirement processing...')
 
     parsed = urlparse(obj_url)
@@ -187,16 +187,29 @@ def _load_and_normalize_exp_req(obj_url: str) -> List[Dict[str, Any]]:
     normalized_list = normalize_req_dict(explicit_requirements_raw)
 
     final_list = []
-    for r in normalized_list:
-        req_text = r.get('requirement')
+    for i, r in enumerate(normalized_list):
+        if not r.get('requirement') or not r.get('sources'):
+            continue
 
         final_list.append(
             {
-                'requirement': req_text,
-                'requirement_type': r.get('requirement_type', 'functional'),
-                'exp_req_ids': [],
+                'requirement_id': f'v{version}-REQ-E-{i:03d}',
+                'requirement': r.get('requirement', ''),
+                'requirement_category': r.get('requirement_type', 'Uncategorized'),
+                'source_type': 'explicit',
                 'sources': r.get('sources', []),
-                'source_type': 'explicit',  # Mark as explicit
+                'deleted': False,
+                'duplicate': False,  # Initialize to False
+                'near_duplicate_id': '',
+                'embedding': [],
+                'change_analysis_status': 'NEW',
+                'change_analysis_status_reason': 'Newly created',
+                'change_analysis_near_duplicate_id': '',
+                'regulations': [],
+                'parent_exp_req_ids': [],
+                'testcase_status': 'NOT_STARTED',
+                'updated_at': firestore.SERVER_TIMESTAMP,
+                'created_at': firestore.SERVER_TIMESTAMP,
             }
         )
 
@@ -205,8 +218,8 @@ def _load_and_normalize_exp_req(obj_url: str) -> List[Dict[str, Any]]:
     return final_list
 
 
-def _persist_requirements_to_firestore(
-    project_id: str, version: str, requirements: List[Dict[str, Any]], start_id: int = 1
+def _write_reqs_to_firestore(
+    project_id: str, version: str, requirements: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
 
     print(f'Generating embeddings for {len(requirements)} requirements...')
@@ -223,31 +236,12 @@ def _persist_requirements_to_firestore(
     doc_tuples = []
     written_reqs = []
 
-    for i, (req, embedding_vector) in enumerate(
-        zip(requirements, embedding_vectors), start=start_id
-    ):
-        req_source_type: str = req.get('source_type', 'unknown')
-        req_id = f'{version}-REQ-{req_source_type[0].upper()}-{i:03d}'
+    for req, embedding_vector in enumerate(zip(requirements, embedding_vectors)):
+        req_id = req.get('requirement_id')
 
         doc_data = {
-            'requirement_id': req_id,
+            **req,
             'embedding': embedding_vector,
-            'source_type': req.get('source_type', ''),
-            'requirement': req.get('requirement', ''),
-            'requirement_type': req.get('requirement_type', ''),
-            'deleted': req.get('deleted', False),
-            'duplicate': req.get('duplicate', False),  # Initialize to False
-            'change_analysis_status': req.get('change_analysis_status', 'NEW'),
-            'change_analysis_status_reason': req.get(
-                'change_analysis_status_reason', ''
-            ),
-            'change_analysis_near_duplicate_id': req.get(
-                'change_analysis_near_duplicate_id', ''
-            ),
-            'sources': req.get('sources', []),
-            'regulations': req.get('regulations', []),
-            'exp_req_ids': req.get('exp_req_ids', []),
-            'testcase_status': req.get('testcase_status', ''),
             'updated_at': firestore.SERVER_TIMESTAMP,
             'created_at': firestore.SERVER_TIMESTAMP,
         }
@@ -264,12 +258,13 @@ def _persist_requirements_to_firestore(
                 'requirement_id': doc_data['requirement_id'],
                 'embedding': doc_data['embedding'],
                 'duplicate': doc_data['duplicate'],
-                'exp_req_ids': doc_data['exp_req_ids'],
                 'source_type': doc_data['source_type'],
             }
         )
 
     _firestore_commit_many(doc_tuples)
+
+    print(f'Explicit writes => {len(written_reqs)}')
 
     return written_reqs
 
@@ -306,7 +301,7 @@ def _mark_duplicates(
                     (
                         req_i['requirement_id'],
                         req_j['requirement_id'],
-                        req_i.get('exp_req_ids', []),
+                        req_i.get('parent_exp_req_ids', []),
                     )
                 )
 
@@ -323,7 +318,7 @@ def _mark_duplicates(
 
     batch = firestore_client.batch()
 
-    for req_id, near_duplicate_id, exp_req_ids in duplicates_to_update:
+    for req_id, near_duplicate_id, parent_exp_req_ids in duplicates_to_update:
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
@@ -331,7 +326,7 @@ def _mark_duplicates(
             doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id}
         )
 
-        if exp_req_ids:
+        if parent_exp_req_ids:
             original_ref = firestore_client.document(
                 'projects',
                 project_id,
@@ -343,7 +338,7 @@ def _mark_duplicates(
 
             batch.update(
                 original_ref,
-                {'exp_req_ids': firestore.ArrayUnion(exp_req_ids)},
+                {'parent_exp_req_ids': firestore.ArrayUnion(parent_exp_req_ids)},
             )
 
     batch.commit()
@@ -356,6 +351,8 @@ def _mark_duplicates(
             all_duplicates.append(req)
         else:
             all_originals.append(req)
+
+    print(f'Dedupe => Marked {len(all_duplicates)} explicit duplicates.')
 
     return all_duplicates, all_originals
 
@@ -398,21 +395,15 @@ def process_explicit_requirements(request):
 
         _update_firestore_status(project_id, version, 'START_EXP_REQ_EXTRACT')
 
-        normalised_reqs = _load_and_normalize_exp_req(reqs_url)
+        normalised_reqs = _load_and_normalize_exp_req(version, reqs_url)
 
         _update_firestore_status(project_id, version, 'START_STORE_EXPLICIT')
 
-        explicit_reqs = _persist_requirements_to_firestore(
-            project_id, version, normalised_reqs, start_id=1
-        )
-
-        print(f'Explicit writes => {len(explicit_reqs)}')
+        explicit_reqs = _write_reqs_to_firestore(project_id, version, normalised_reqs)
 
         _update_firestore_status(project_id, version, 'START_DEDUPE_EXPLICIT')
 
-        dupe_exps, orig_exps = _mark_duplicates(project_id, version, explicit_reqs)
-
-        print(f'Dedupe => Marked {len(dupe_exps)} explicit duplicates.')
+        _mark_duplicates(project_id, version, explicit_reqs)
 
         _update_firestore_status(project_id, version, 'CONFIRM_EXP_REQ_EXTRACT')
 
