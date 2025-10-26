@@ -190,7 +190,7 @@ def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     print(f'Starting parallel refinement of {len(results)} candidates with Gemini...')
 
-    texts_to_refine = [res.get('content', '') for res in results]
+    texts_to_refine = [res.get('snippet', '') for res in results]
 
     with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         refined_texts = list(ex.map(_refine_requirement_with_gemini, texts_to_refine))
