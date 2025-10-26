@@ -236,7 +236,7 @@ def _write_reqs_to_firestore(
     doc_tuples = []
     written_reqs = []
 
-    for req, embedding_vector in enumerate(zip(requirements, embedding_vectors)):
+    for req, embedding_vector in zip(requirements, embedding_vectors):
         req_id = req.get('requirement_id')
 
         doc_data = {
