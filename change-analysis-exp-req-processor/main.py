@@ -277,15 +277,8 @@ def _load_existing_exp_requirements(
     for doc in query.stream():
         data = doc.to_dict()
         if 'requirement' in data and 'embedding' in data:
-            existing_reqs.append(
-                {
-                    'requirement_id': data.get('requirement_id'),
-                    'requirement': data.get('requirement'),
-                    'embedding': data.get('embedding'),
-                    'source_type': data.get('source_type'),
-                    'exp_req_ids': data.get('exp_req_ids', []),
-                }
-            )
+            existing_reqs.append(data)
+    
     print(f'Loaded {len(existing_reqs)} existing requirements.')
     return existing_reqs
 
