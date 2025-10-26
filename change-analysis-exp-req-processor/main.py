@@ -159,7 +159,7 @@ def _generate_embedding(text: str) -> List[float]:
         return []
 
 
-def _load_updated_exp_requirements(
+def _load_newly_uploaded_exp_requirements(
     version: str, requirements_p1_url: str
 ) -> List[Dict[str, Any]]:
     '''Loads, normalizes, and embeds new explicit requirements from GCS.'''
@@ -599,7 +599,7 @@ def explicit_req_processor_change_analysis(request):
         existing_exp_reqs = _load_existing_exp_requirements(project_id, version)
         print(f'Loaded {len(existing_exp_reqs)} existing explicit requirements.')
 
-        new_exp_reqs = _load_updated_exp_requirements(version, reqs_url)
+        new_exp_reqs = _load_newly_uploaded_exp_requirements(version, reqs_url)
 
         _update_version_status(project_id, version, 'START_CHANGE_DETECTION')
 
