@@ -24,7 +24,6 @@ logging.basicConfig(level=logging.INFO)
 
 # --- Config ---
 MAX_WORKERS = 8
-PROCESS_BATCH_SIZE = 50
 GENAI_MODEL = "gemini-2.5-flash"
 GENAI_TIMEOUT = 60
 REQUIREMENT_TYPES = [
@@ -91,7 +90,9 @@ def _call_genai_for_snippet(snippet: Dict[str, str]) -> List[Dict[str, Any]]:
     """
     # Isolate the text for the prompt
     text_to_analyze = snippet.get('text_used', '')
-    if not text_to_analyze:
+
+    if not text_to_analyze or len(text_to_analyze.split()) <= 15:
+        logging.info(f"Skipping snippet, too short: '{text_to_analyze[:50]}...'")
         return []
 
     prompt = f"""
@@ -148,6 +149,8 @@ def process_requirements_phase_1(request):
     Main HTTP entrypoint for requirements extraction Phase 1.
     It orchestrates the loading, processing, and saving of requirements.
     """
+    project_id, version = None, None
+
     try:
         payload = request.get_json(silent=True) or {}
         project_id = payload.get("project_id")
@@ -163,21 +166,39 @@ def process_requirements_phase_1(request):
         try:
             bucket_name, file_path = extracted_text_url[5:].split("/", 1)
             blob = storage_client.bucket(bucket_name).blob(file_path)
-            extracted_data_list: List[Dict[str, str]] = json.loads(
+
+            extracted_file_data: List[Dict[str, Any]] = json.loads(
                 blob.download_as_text()
             )
+
         except Exception as e:
             logging.error(f"Failed to load data from GCS: {e}")
             raise RuntimeError("Failed to load data from GCS")
 
-        logging.info(f"Loaded {len(extracted_data_list)} extracted text chunks")
+        logging.info(f"Loaded {len(extracted_file_data)} files data.")
+
+        all_snippets_to_process: List[Dict[str, str]] = []
+        for file_data in extracted_file_data:
+            file_name = file_data.get("file_name", "unknown")
+            for snippet_data in file_data.get("extracted_text", []):
+                all_snippets_to_process.append(
+                    {
+                        "file_name": file_name,
+                        "text_used": snippet_data.get("text", ""),
+                        "location": snippet_data.get("location", "Unknown"),
+                    }
+                )
+
+        logging.info(
+            f"Generated {len(all_snippets_to_process)} total snippets for processing."
+        )
 
         # Process each snippet individually in parallel
         all_requirements: List[Dict[str, Any]] = []
 
         # Use ThreadPoolExecutor to run _call_genai_for_snippet on every item
         with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            results_iterator = ex.map(_call_genai_for_snippet, extracted_data_list)
+            results_iterator = ex.map(_call_genai_for_snippet, all_snippets_to_process)
 
             for result in results_iterator:
                 all_requirements.extend(result)
@@ -187,7 +208,9 @@ def process_requirements_phase_1(request):
         )
 
         # Save to GCS
-        output_path = f"projects/{project_id}/v_{version}/extractions/requirements-phase-1.json"
+        output_path = (
+            f"projects/{project_id}/v_{version}/extractions/requirements-phase-1.json"
+        )
         output_blob = storage_client.bucket(OUTPUT_BUCKET).blob(output_path)
         output_blob.upload_from_string(
             json.dumps(all_requirements, indent=2), content_type="application/json"
