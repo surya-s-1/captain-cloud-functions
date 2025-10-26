@@ -77,10 +77,8 @@ def _extract_from_structured(file_url):
         row_dict = row.to_dict()
         extracted_data.append(
             {
-                'text': json.dumps(
-                    row_dict
-                ),
-                'location': {'row': int(row_index)},
+                'text': json.dumps(row_dict),
+                'location': f'Row number: {row_index + 1}',
             }
         )
 
@@ -106,7 +104,10 @@ def _extract_from_word(file_url):
     for para_index, para in enumerate(doc.paragraphs):
         if para.text.strip():
             extracted_data.append(
-                {'text': para.text, 'location': {'paragraph_number': para_index}}
+                {
+                    'text': para.text,
+                    'location': f'paragraph_number: {para_index}'
+                }
             )
     return {
         'file_type': 'unstructured',
@@ -145,7 +146,10 @@ def _extract_from_document_ai(file_url):
 
             if paragraph_text.strip():
                 extracted_data.append(
-                    {'text': paragraph_text, 'location': {'page': page_index + 1}}
+                    {
+                        'text': paragraph_text,
+                        'location': f'page: {page_index + 1}'
+                    }
                 )
     return {
         'file_type': 'semistructured',
