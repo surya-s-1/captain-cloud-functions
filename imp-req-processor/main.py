@@ -599,7 +599,7 @@ def process_implicit_requirements(request):
 
         refined_results = _refine_disc_results(disc_results)
 
-        formatted_results = _format_disc_results(refined_results)
+        formatted_results = _format_disc_results(version, refined_results)
 
         _update_firestore_status(project_id, version, 'START_STORE_IMPLICIT')
 
