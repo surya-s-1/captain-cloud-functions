@@ -24,7 +24,7 @@ logging.basicConfig(level=logging.INFO)
 
 # --- Config ---
 MAX_WORKERS = 8
-CHUNK_SIZE = 20  # number of text snippets per Gemini request
+PROCESS_BATCH_SIZE = 50
 GENAI_MODEL = "gemini-2.5-flash"
 GENAI_TIMEOUT = 60
 REQUIREMENT_TYPES = [
@@ -46,20 +46,8 @@ REQUIREMENT_SCHEMA = {
                 'type': 'STRING',
                 'enum': REQUIREMENT_TYPES,
             },
-            'sources': {
-                'type': 'ARRAY',
-                'items': {
-                    'type': 'OBJECT',
-                    'properties': {
-                        'file_name': {'type': 'STRING'},
-                        'text_used': {'type': 'STRING'},
-                        'location': {'type': 'STRING'},
-                    },
-                    'required': ['file_name', 'text_used', 'location'],
-                },
-            },
         },
-        'required': ['requirement', 'requirement_type', 'sources'],
+        'required': ['requirement', 'requirement_type'],
     },
 }
 
@@ -95,38 +83,30 @@ def _retry(max_attempts: int = 3, base_delay: int = 2):
     return deco
 
 
-def _chunk(lst: list, n: int) -> Iterator[list]:
-    """Yields successive n-sized chunks from a list."""
-    for i in range(0, len(lst), n):
-        yield lst[i : i + n]
-
-
 @_retry(max_attempts=3)
-def _call_genai(batch: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-    """Call Gemini for one chunk of extracted text and return parsed JSON."""
+def _call_genai_for_snippet(snippet: Dict[str, str]) -> List[Dict[str, Any]]:
+    """
+    Call Gemini for a single text snippet to split it into requirements.
+    The snippet contains 'file_name', 'text_used', and 'location'.
+    """
+    # Isolate the text for the prompt
+    text_to_analyze = snippet.get('text_used', '')
+    if not text_to_analyze:
+        return []
+
     prompt = f"""
     You are a software requirements analyst for medical devices.
-    Analyze the following extracted text snippets, deduplicate, and extract requirements.
+    Analyze the single, provided text snippet. Do not invent any new requirements or derive implicit requirements.
+    Your sole task is to take the text, split it into its constituent requirements if multiple exist, and categorize each one. If not, return the original provided text.
 
     Categorize into: {', '.join(REQUIREMENT_TYPES)}.
     If none fit, default to 'non-functional'.
 
-    Return ONLY valid JSON array with each object of form:
-    {{
-        "requirement": str, 
-        "requirement_type": str, 
-        "sources":[
-            {{
-                "file_name":str,
-                "text_used":str,
-                "location":str
-            }}
-        ]
-    }}
+    Return ONLY a valid JSON array of requirements, each with the keys "requirement" and "requirement_type".
 
-    Input JSON:
-    ```json
-    {json.dumps(batch, indent=2)}
+    Input Text Snippet:
+    ```
+    {text_to_analyze}
     ```
     """
 
@@ -136,10 +116,29 @@ def _call_genai(batch: List[Dict[str, str]]) -> List[Dict[str, Any]]:
         config=GenerateContentConfig(
             response_mime_type='application/json',
             response_json_schema=REQUIREMENT_SCHEMA,
+            timeout=GENAI_TIMEOUT,
         ),
     )
 
-    return json.loads(resp.text)
+    extracted_requirements = json.loads(resp.text)
+
+    source_info = {
+        "file_name": snippet.get("file_name", "unknown"),
+        "text_used": snippet.get("text_used", ""),
+        "location": snippet.get("location", "unknown"),
+    }
+
+    final_requirements = []
+    for req in extracted_requirements:
+        final_requirements.append(
+            {
+                "requirement": req["requirement"],
+                "requirement_type": req["requirement_type"],
+                "sources": [source_info],
+            }
+        )
+
+    return final_requirements
 
 
 # --- Main Cloud Function ---
@@ -164,23 +163,28 @@ def process_requirements_phase_1(request):
         try:
             bucket_name, file_path = extracted_text_url[5:].split("/", 1)
             blob = storage_client.bucket(bucket_name).blob(file_path)
-            extracted_data_list = json.loads(blob.download_as_text())
+            extracted_data_list: List[Dict[str, str]] = json.loads(
+                blob.download_as_text()
+            )
         except Exception as e:
             logging.error(f"Failed to load data from GCS: {e}")
             raise RuntimeError("Failed to load data from GCS")
 
         logging.info(f"Loaded {len(extracted_data_list)} extracted text chunks")
 
-        # Split into manageable chunks
-        batches = list(_chunk(extracted_data_list, CHUNK_SIZE))
-        logging.info(f"Processing {len(batches)} batches in parallel...")
+        # Process each snippet individually in parallel
+        all_requirements: List[Dict[str, Any]] = []
 
-        all_requirements = []
+        # Use ThreadPoolExecutor to run _call_genai_for_snippet on every item
         with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            for result in ex.map(_call_genai, batches):
+            results_iterator = ex.map(_call_genai_for_snippet, extracted_data_list)
+
+            for result in results_iterator:
                 all_requirements.extend(result)
 
-        logging.info(f"Extracted {len(all_requirements)} requirements")
+        logging.info(
+            f"Extracted {len(all_requirements)} requirements after splitting/categorizing snippets."
+        )
 
         # Save to GCS
         output_path = f"projects/{project_id}/v_{version}/extractions/requirements-phase-1.json"
@@ -197,6 +201,7 @@ def process_requirements_phase_1(request):
     except Exception as e:
         logging.exception("Phase 1 failed")
 
-        _update_firestore_status(project_id, version, "ERR_REQ_EXTRACT_P1")
+        if project_id and version:
+            _update_firestore_status(project_id, version, "ERR_REQ_EXTRACT_P1_SPLIT")
 
         return (json.dumps({"status": "error", "message": str(e)}), 500)
