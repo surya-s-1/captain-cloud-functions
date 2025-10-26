@@ -621,10 +621,10 @@ def process_implicit_requirements(request):
         )
 
     except Exception as e:
-        logging.exception('Error during requirements extraction phase 2b (IMPLICIT):')
+        logging.exception('Error during requirements extraction (IMPLICIT):')
 
         if project_id and version:
-            _update_firestore_status(project_id, version, 'ERR_REQ_EXTRACT_P2B')
+            _update_firestore_status(project_id, version, 'ERR_IMP_REQ_EXTRACT')
 
         return (
             json.dumps(
