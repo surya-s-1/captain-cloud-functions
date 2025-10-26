@@ -184,19 +184,25 @@ def _load_newly_uploaded_exp_requirements(
     for i, (r, embedding_vector) in enumerate(
         zip(normalized_list, embedding_vectors), start=1
     ):
-        requirement_id = f'v{version}-REQ-E-{i:03d}'
         final_list.append(
             {
-                'requirement_id': requirement_id,
+                'requirement_id': f'v{version}-REQ-E-{i:03d}',
                 'requirement': r.get('requirement', ''),
-                'requirement_type': r.get('requirement_type', 'functional'),
-                'exp_req_ids': [],
-                'sources': r.get('sources', []),
+                'requirement_category': r.get('requirement_type', 'Uncategorized'),
                 'source_type': SOURCE_TYPE_EXPLICIT,
-                'embedding': embedding_vector,
-                'change_analysis_status': CHANGE_STATUS_NEW,  # Initial status
+                'sources': r.get('sources', []),
                 'deleted': False,
-                'duplicate': False,
+                'duplicate': False,  # Initialize to False
+                'near_duplicate_id': '',
+                'embedding': embedding_vector,
+                'change_analysis_status': CHANGE_STATUS_NEW,
+                'change_analysis_status_reason': 'Newly created',
+                'change_analysis_near_duplicate_id': '',
+                'regulations': [],
+                'parent_exp_req_ids': [],
+                'testcase_status': 'NOT_STARTED',
+                'updated_at': firestore.SERVER_TIMESTAMP,
+                'created_at': firestore.SERVER_TIMESTAMP,
             }
         )
     print(f'Loaded, normalized, and embedded {len(final_list)} explicit requirements.')
@@ -278,7 +284,7 @@ def _load_existing_exp_requirements(
         data = doc.to_dict()
         if 'requirement' in data and 'embedding' in data:
             existing_reqs.append(data)
-    
+
     print(f'Loaded {len(existing_reqs)} existing requirements.')
 
     return existing_reqs
@@ -323,16 +329,16 @@ def _mark_new_reqs_change_status(
                 'Detected considerable modifications in updated requirements'
             )
             new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
-            new_req['testcase_status'] = ''
+            new_req['testcase_status'] = 'NOT_STARTED'
             old_ids_checked.add(best_match['requirement_id'])
 
         else:
             new_req['change_analysis_status'] = CHANGE_STATUS_NEW
             new_req['change_analysis_status_reason'] = (
-                'Detected only in updated requirements'
+                'Detected only in new version requirements'
             )
             new_req['change_analysis_near_duplicate_id'] = None
-            new_req['testcase_status'] = ''
+            new_req['testcase_status'] = 'NOT_STARTED'
 
     print(
         f'Statuses: UNCHANGED={len([r for r in new_exp_reqs if r['change_analysis_status'] == CHANGE_STATUS_UNCHANGED])},'
@@ -344,7 +350,8 @@ def _mark_new_reqs_change_status(
     old_exp_to_check = [
         r
         for r in existing_exp_reqs
-        if r['requirement_id'] not in old_ids_checked and r['source_type'] == SOURCE_TYPE_EXPLICIT
+        if r['requirement_id'] not in old_ids_checked
+        and r['source_type'] == SOURCE_TYPE_EXPLICIT
     ]
 
     return new_exp_reqs, old_exp_to_check
@@ -352,8 +359,6 @@ def _mark_new_reqs_change_status(
 
 def _mark_old_reqs_deprecated(old_reqs_to_check: List[Dict[str, Any]]) -> List[str]:
     '''Step 2: Marks unmatched old explicit requirements as DEPRECATED.'''
-    # NOTE: The provided logic marks all unmatched explicit requirements as DEPRECATED.
-    # We should compare against the *new* list to confirm obsolescence.
     print(
         f'Starting deprecation check for {len(old_reqs_to_check)} old explicit texts...'
     )
@@ -403,9 +408,9 @@ def _mark_unchanged_modified_new_in_firestore(
     doc_updates_tuples_list = []
     written_reqs = []
 
-    for idx, req in enumerate(requirements):
+    for req in requirements:
         req_source_type = req.get('source_type', '')
-        req_change_status = req.get('change_analysis_status', 'NEW')
+        req_change_status = req.get('change_analysis_status', '')
         change_analysis_near_duplicate_id = req.get(
             'change_analysis_near_duplicate_id', ''
         )
@@ -413,11 +418,12 @@ def _mark_unchanged_modified_new_in_firestore(
         if req_source_type == SOURCE_TYPE_EXPLICIT:
             # Case 1: EXPLICIT NEW (New insertions)
             if req_change_status == CHANGE_STATUS_NEW:
-                req_id = req.get('requirement_id', f'v{version}-REQ-E-{idx:03d}')
+                req_id = req.get('requirement_id')
 
                 doc_data = {
                     **req,
                     'requirement_id': req_id,
+                    'updated_at': firestore.SERVER_TIMESTAMP,
                     'created_at': firestore.SERVER_TIMESTAMP,
                 }
 
@@ -432,14 +438,14 @@ def _mark_unchanged_modified_new_in_firestore(
                 and change_analysis_near_duplicate_id
             ):
                 req_id = change_analysis_near_duplicate_id
+
                 doc_data = {
                     **req,
                     'requirement_id': req_id,
-                    'updated_at': firestore.SERVER_TIMESTAMP
+                    'updated_at': firestore.SERVER_TIMESTAMP,
                 }
 
                 doc_ref = requirements_collection_ref.document(req_id)
-
                 doc_updates_tuples_list.append((doc_ref, doc_data))
 
                 req['requirement_id'] = req_id
@@ -456,7 +462,7 @@ def _mark_unchanged_modified_new_in_firestore(
                 'requirement': req.get('requirement', ''),
                 'embedding': req.get('embedding', []),
                 'duplicate': req.get('duplicate', False),
-                'exp_req_ids': req.get('exp_req_ids', []),
+                'parent_exp_req_ids': req.get('parent_exp_req_ids', []),
                 'change_analysis_near_duplicate_id': req.get(
                     'change_analysis_near_duplicate_id', ''
                 ),
@@ -500,7 +506,7 @@ def _mark_duplicates(
                     (
                         req_i['requirement_id'],
                         req_j['requirement_id'],
-                        req_i.get('exp_req_ids', []),
+                        req_i.get('parent_exp_req_ids', []),
                     )
                 )
                 req_i['duplicate'] = True
@@ -513,7 +519,7 @@ def _mark_duplicates(
     print(f'Found {len(duplicates_to_update)} explicit duplicates to mark.')
     batch = firestore_client.batch()
 
-    for req_id, near_duplicate_id, exp_req_ids in duplicates_to_update:
+    for req_id, near_duplicate_id, parent_exp_req_ids in duplicates_to_update:
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
@@ -522,7 +528,7 @@ def _mark_duplicates(
         )
 
         # Merge source IDs into the original document
-        if exp_req_ids:
+        if parent_exp_req_ids:
             original_ref = firestore_client.document(
                 'projects',
                 project_id,
@@ -532,7 +538,8 @@ def _mark_duplicates(
                 near_duplicate_id,
             )
             batch.update(
-                original_ref, {'exp_req_ids': firestore.ArrayUnion(exp_req_ids)}
+                original_ref,
+                {'parent_exp_req_ids': firestore.ArrayUnion(parent_exp_req_ids)},
             )
 
     batch.commit()
@@ -544,6 +551,10 @@ def _mark_duplicates(
             all_duplicates.append(req)
         else:
             all_originals.append(req)
+
+    print(
+        f'Vector Dedupe (Explicit)=> Marked {len(all_duplicates)} new explicit duplicates.'
+    )
 
     return all_duplicates, all_originals
 
@@ -583,7 +594,7 @@ def explicit_req_processor_change_analysis(request):
                 400,
             )
 
-        _update_version_status(project_id, version, 'START_REQ_EXTRACT_P2')
+        _update_version_status(project_id, version, 'START_EXP_REQ_EXTRACT')
 
         existing_exp_reqs = _load_existing_exp_requirements(project_id, version)
 
@@ -601,7 +612,7 @@ def explicit_req_processor_change_analysis(request):
         # 2. Mark old unmatched explicit requirements as DEPRECATED
         deprecated_exp_ids = _mark_old_reqs_deprecated(old_exp_to_check)
 
-        _update_version_status(project_id, version, 'START_DEPRECATION_COMMIT_EXPLICIT')
+        _update_version_status(project_id, version, 'START_DEPRECATION_EXPLICIT')
 
         # 3. Commit explicit deprecation status updates
         _mark_deprecated_in_firestore(project_id, version, deprecated_exp_ids)
@@ -618,10 +629,7 @@ def explicit_req_processor_change_analysis(request):
         _update_version_status(project_id, version, 'START_DEDUPE_EXPLICIT')
 
         # 5. Deduplicate the newly written explicit requirements
-        dupe_exps, orig_exps = _mark_duplicates(project_id, version, written_exp_reqs)
-        print(
-            f'Vector Dedupe (Explicit)=> Marked {len(dupe_exps)} new explicit duplicates.'
-        )
+        _mark_duplicates(project_id, version, written_exp_reqs)
 
         _update_version_status(project_id, version, 'CONFIRM_CHANGE_ANALYSIS_EXPLICIT')
 
