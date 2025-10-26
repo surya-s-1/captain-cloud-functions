@@ -25,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 # --- Config ---
 MAX_WORKERS = 8
 GENAI_MODEL = "gemini-2.5-flash"
-GENAI_TIMEOUT = 60
+GENAI_TIMEOUT = 90
 REQUIREMENT_TYPES = [
     "functional",
     "non-functional",
@@ -116,8 +116,7 @@ def _call_genai_for_snippet(snippet: Dict[str, str]) -> List[Dict[str, Any]]:
         contents=[Content(parts=[Part(text=prompt)], role='user')],
         config=GenerateContentConfig(
             response_mime_type='application/json',
-            response_json_schema=REQUIREMENT_SCHEMA,
-            timeout=GENAI_TIMEOUT,
+            response_json_schema=REQUIREMENT_SCHEMA
         ),
     )
 
@@ -198,7 +197,9 @@ def process_requirements_phase_1(request):
 
         # Use ThreadPoolExecutor to run _call_genai_for_snippet on every item
         with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            results_iterator = ex.map(_call_genai_for_snippet, all_snippets_to_process)
+            results_iterator = ex.map(
+                _call_genai_for_snippet, all_snippets_to_process, timeout=GENAI_TIMEOUT
+            )
 
             for result in results_iterator:
                 all_requirements.extend(result)
@@ -225,6 +226,6 @@ def process_requirements_phase_1(request):
         logging.exception("Phase 1 failed")
 
         if project_id and version:
-            _update_firestore_status(project_id, version, "ERR_REQ_EXTRACT_P1_SPLIT")
+            _update_firestore_status(project_id, version, "ERR_REQ_EXTRACT_P1")
 
         return (json.dumps({"status": "error", "message": str(e)}), 500)
