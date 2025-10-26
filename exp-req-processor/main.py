@@ -187,7 +187,7 @@ def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, An
     normalized_list = normalize_req_dict(explicit_requirements_raw)
 
     final_list = []
-    for i, r in enumerate(normalized_list):
+    for i, r in enumerate(normalized_list, start=1):
         if not r.get('requirement') or not r.get('sources'):
             continue
 
