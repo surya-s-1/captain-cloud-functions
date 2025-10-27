@@ -23,14 +23,14 @@ FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 DISCOVERY_RELEVANCE_THRESHOLD = float(os.getenv('DISCOVERY_RELEVANCE_THRESHOLD'))
+FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
+GENAI_MODEL = os.getenv('GENAI_MODEL')
+GENAI_API_VERSION = os.getenv('GENAI_API_VERSION')
+GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
 
 # Constants
 REGULATIONS = ['FDA', 'IEC62304', 'ISO9001', 'ISO13485', 'ISO27001', 'SaMD']
 MAX_WORKERS = 16
-FIRESTORE_COMMIT_CHUNK = 450
-GENAI_MODEL = 'gemini-2.5-flash'
-GENAI_API_VERSION = 'v1'
-GENAI_TIMEOUT_SECONDS = 90
 
 SOURCE_TYPE_IMPLICIT = 'implicit'
 
@@ -121,6 +121,7 @@ def _firestore_commit_many(
         batch.set(doc_ref, data, merge=True)  # Use merge=True for updates/sets
         count += 1
         if count >= FIRESTORE_COMMIT_CHUNK:
+            print(f'Firestore => committing {count} documents')
             batch.commit()
             batch = firestore_client.batch()
             count = 0
@@ -288,6 +289,7 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
         el for el in processed if el['relevance_score'] > DISCOVERY_RELEVANCE_THRESHOLD
     ]
 
+
 def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str, Any]]:
     req_text, req_id = req_tuple
 
@@ -299,7 +301,7 @@ def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str
 
     for res in discovery_results:
         res['explicit_requirement_id'] = req_id
-    
+
     return discovery_results
 
 
@@ -316,7 +318,7 @@ def _query_discovery_engine_parallel(
     ) as ex:
         for res_list in ex.map(_query_discovery_engine_wrapper, req_inputs):
             all_results.extend(res_list)
-    
+
     print(f'Discovery implicit candidates => {len(all_results)}')
 
     return all_results
@@ -357,7 +359,7 @@ def _format_disc_results(
                         'source': {
                             'filename': res.get('filename', None),
                             'snippet': res.get('snippet', None),
-                            'relevance_score': res.get('relevance_score', None)
+                            'relevance_score': res.get('relevance_score', None),
                         },
                     }
                 ],
@@ -662,46 +664,6 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
     print(f'Committed {len(updates)} implicit requirement status/link updates.')
 
 
-def process_new_or_modified_implicit_search(project_id: str, version: str) -> None:
-    print('Starting implicit search for NEW/MODIFIED explicit requirements...')
-
-    # 1. Query Firestore for explicit reqs with NEW or MODIFIED status
-    search_reqs_query = (
-        firestore_client.collection(
-            'projects', project_id, 'versions', version, 'requirements'
-        )
-        .where('source_type', '==', 'explicit')
-        .where('deleted', '==', False)
-        .where(
-            'change_analysis_status', 'in', [CHANGE_STATUS_NEW, CHANGE_STATUS_MODIFIED]
-        )
-        .select(['requirement_id', 'requirement'])
-    )
-
-    search_reqs = [doc.to_dict() for doc in search_reqs_query.stream()]
-
-    if not search_reqs:
-        print(
-            'No new or modified explicit requirements found to trigger implicit search.'
-        )
-        return
-
-    # 2. Query Discovery Engine for implicit candidates (in parallel)
-    disc_results = _query_discovery_engine_parallel(search_reqs)
-
-    # 3. Refine candidates with Gemini (in parallel)
-    refined_results = _refine_disc_results(disc_results)
-
-    # 4. Format, embed, and set to SOURCE_TYPE_IMPLICIT type
-    implicit_reqs = _format_disc_results(version, refined_results)
-
-    # 6. Persist to Firestore (new insertions only)
-    written_imp_reqs = _write_reqs_to_firestore(project_id, version, implicit_reqs)
-
-    # 7. Deduplicate new implicit requirements against existing and themselves
-    _mark_duplicates(project_id, version, written_imp_reqs)
-
-
 # ===================== # Main HTTP Function for Implicit Processing # =====================
 
 
@@ -737,15 +699,54 @@ def process_implicit_requirements(request):
 
         _update_version_status(project_id, version, 'START_IMPLICIT_ANALYSIS')
 
-        # Step A: Update status of existing implicit requirements based on explicit links
+        # Update status of existing implicit requirements based on explicit links
         update_existing_implicit_reqs(project_id, version)
 
         _update_version_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
 
-        # Step B: Search and create new implicit requirements for NEW/MODIFIED explicit sources
-        process_new_or_modified_implicit_search(project_id, version)
+        # Search and create new implicit requirements for NEW/MODIFIED explicit sources
+        print('Starting implicit search for NEW/MODIFIED explicit requirements...')
 
-        _update_version_status(project_id, version, 'CONFIRM_REQ_EXTRACT')
+        # Query Firestore for explicit reqs with NEW or MODIFIED status
+        search_reqs_query = (
+            firestore_client.collection(
+                'projects', project_id, 'versions', version, 'requirements'
+            )
+            .where('source_type', '==', 'explicit')
+            .where('deleted', '==', False)
+            .where(
+                'change_analysis_status',
+                'in',
+                [CHANGE_STATUS_NEW, CHANGE_STATUS_MODIFIED],
+            )
+            .select(['requirement_id', 'requirement'])
+        )
+
+        search_reqs = [doc.to_dict() for doc in search_reqs_query.stream()]
+
+        if not search_reqs:
+            print(
+                'No new or modified explicit requirements found to trigger implicit search.'
+            )
+            return
+
+        disc_results = _query_discovery_engine_parallel(search_reqs)
+
+        _update_version_status(project_id, version, 'START_IMPLICIT_REFINE')
+
+        refined_results = _refine_disc_results(disc_results)
+
+        implicit_reqs = _format_disc_results(version, refined_results)
+
+        _update_version_status(project_id, version, 'START_STORE_IMPLICIT')
+
+        written_imp_reqs = _write_reqs_to_firestore(project_id, version, implicit_reqs)
+
+        _update_version_status(project_id, version, 'START_DEDUPE_IMPLICIT')
+
+        _mark_duplicates(project_id, version, written_imp_reqs)
+
+        _update_version_status(project_id, version, 'CONFIRM_CHANGE_ANALYSIS_IMPLICIT')
 
         return ('OK', 200)
 
