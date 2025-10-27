@@ -41,6 +41,8 @@ REFINEMENT_PROMPT = (
     'You are a Medical Quality Assurance Document Specialist. Your task is to take raw text, '
     'which is often a snippet from a regulatory document or an informal comment, and '
     'rewrite it into a single, objective, formal software or system requirement. '
+    'Break into multiple requirements if needed.'
+    'Make sure the rewritten requirement is size is less than 300 characters.'
     'The rewritten requirement must be clear, concise, verifiable, and written in '
     'the third person (e.g., \'The system shall...\' or \'The device must...\'). '
     'Remove all conversational language, first/second/third-person comments, '
@@ -84,7 +86,7 @@ def _retry(max_attempts: int = 3, base_delay: float = 0.5):
                 try:
                     return fn(*args, **kwargs)
                 except Exception as e:
-                    logging.warning(
+                    logging.exception(
                         f'Attempt {attempt}/{max_attempts} failed for {fn.__name__} with error: {e}'
                     )
                     if attempt == max_attempts:
@@ -105,6 +107,7 @@ def _update_firestore_status(project_id: str, version: str, status: str) -> None
     print(f'Status => {status}')
 
 
+@_retry(max_attempts=3)
 def _firestore_commit_many(
     doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
 ) -> None:
@@ -160,7 +163,7 @@ def _genai_json_call(model: str, prompt: str, schema: dict) -> list:
 
 
 @_retry(max_attempts=3)
-def _refine_requirement_with_gemini(text: str) -> str:
+def _refine_requirement_with_gemini(text: str) -> List[str]:
     '''Refines a raw text snippet into an objective requirement using Gemini.'''
     if not text:
         return ''
@@ -170,19 +173,24 @@ def _refine_requirement_with_gemini(text: str) -> str:
             model=GENAI_MODEL,
             prompt=REFINEMENT_PROMPT.format(payload=text),
             schema={
-                'type': 'object',
-                'properties': {
-                    'text': {'type': 'string'},
+                'type': 'ARRAY',
+                'items': {
+                    'type': 'OBJECT',
+                    'properties': {
+                        'text': {'type': 'string'},
+                    },
+                    'required': ['text'],
                 },
-                'required': ['text'],
             },
         )
-        return response.get('text', '')
+
+        return [resp.get('text', '') for resp in response]
+
     except Exception as e:
         logging.error(
             f'Gemini refinement failed for text: \'{text[:50]}...\'. Error: {e}'
         )
-        # Fallback to the raw text if refinement fails
+
         return text
 
 
@@ -193,14 +201,19 @@ def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     texts_to_refine = [res.get('snippet', '') for res in results]
 
     with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        refined_texts = list(ex.map(_refine_requirement_with_gemini, texts_to_refine))
+        refined_text_responses = list(
+            ex.map(_refine_requirement_with_gemini, texts_to_refine)
+        )
 
-    for candidate, refined_text in zip(results, refined_texts):
-        candidate['refined_text'] = refined_text
+    refined_candidates = []
 
-    print('Refinement complete.')
+    for candidate, refined_texts in zip(results, refined_text_responses):
+        for refined_text in refined_texts:
+            refined_candidates.append({**candidate, 'refined_text': refined_text})
 
-    return results
+    print('Refinement complete. Final candidates =>', len(refined_candidates))
+
+    return refined_candidates
 
 
 @_retry(max_attempts=3)
