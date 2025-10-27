@@ -16,6 +16,7 @@ import functions_framework
 from google import genai
 from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 from google.cloud import firestore, discoveryengine_v1
+from google.cloud.firestore_v1.transforms import Sentinel
 
 # =====================
 # Environment variables
@@ -121,6 +122,18 @@ def _update_firestore_status(project_id: str, version: str, status: str) -> None
 def _firestore_json_converter(obj: Any) -> str:
     if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
+
+    if isinstance(obj, bytes):
+        return obj.decode('utf-8')
+
+    if isinstance(obj, Sentinel):
+        return '<FIRESTORE_SENTINEL_PLACEHOLDER>'
+
+    if isinstance(obj, (list, tuple)):
+        return [_firestore_json_converter(item) for item in obj]
+
+    if isinstance(obj, dict):
+        return {k: _firestore_json_converter(v) for k, v in obj.items()}
 
     raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
 
