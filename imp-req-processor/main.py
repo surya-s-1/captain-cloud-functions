@@ -1,6 +1,8 @@
 import os
 import json
 import time
+import datetime
+from datetime import date
 import logging
 import functools
 import concurrent.futures as futures
@@ -107,23 +109,68 @@ def _update_firestore_status(project_id: str, version: str, status: str) -> None
     print(f'Status => {status}')
 
 
+def _firestore_json_converter(obj: Any) -> str:
+    if isinstance(obj, (datetime, date)):
+        return obj.isoformat()
+
+    raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
+
+
+def _get_document_size_approx(data: Dict[str, Any]) -> int:
+    try:
+        data_json = json.dumps(data, default=_firestore_json_converter)
+        return len(data_json.encode('utf-8'))
+    except Exception as e:
+        logging.warning(f'Failed to serialize document data for size check. Error: {e}')
+        return -1
+
+
+MAX_DOC_SIZE_BYTES = 1048576 * 0.95
+
+
 @_retry(max_attempts=3)
 def _firestore_commit_many(
     doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
 ) -> None:
-    '''Commits a list of documents to Firestore in batches.'''
     batch = firestore_client.batch()
-    count = 0
+    batch_count = 0
+    skipped_count = 0
+
+    logging.info(f'Starting commit for {len(doc_tuples)} total documents...')
+
     for doc_ref, data in doc_tuples:
+        data_size_bytes = _get_document_size_approx(data)
+
+        if data_size_bytes == -1:
+            logging.error(f'SKIPPING: {doc_ref.path} due to error during size check.')
+            skipped_count += 1
+            continue
+
+        if data_size_bytes > MAX_DOC_SIZE_BYTES:
+            logging.warning(
+                f'SKIPPING: {doc_ref.path}. '
+                f'Approximate size ({data_size_bytes / 1024:.2f} KiB) exceeds the '
+                f'conservative limit ({MAX_DOC_SIZE_BYTES / 1024:.2f} KiB).'
+            )
+            skipped_count += 1
+            continue
+
         batch.set(doc_ref, data)
-        count += 1
-        if count >= FIRESTORE_COMMIT_CHUNK:
-            print(f'Firestore => committing {count} documents')
+        batch_count += 1
+
+        if batch_count >= FIRESTORE_COMMIT_CHUNK:
+            logging.info(f'Firestore => committing {batch_count} documents...')
             batch.commit()
             batch = firestore_client.batch()
-            count = 0
-    if count:
+            batch_count = 0
+
+    if batch_count:
+        logging.info(f'Firestore => committing final {batch_count} documents...')
         batch.commit()
+
+    logging.warning(
+        f'Commit finished. Total documents skipped due to size/error: {skipped_count}'
+    )
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
