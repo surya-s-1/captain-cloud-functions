@@ -237,49 +237,58 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
     '''
     Queries Discovery Engine for a single text string and returns top results.
     '''
-    request = discoveryengine_v1.SearchRequest(
-        serving_config=serving_config,
-        query=query_text,
-        page_size=10,
-        content_search_spec=discoveryengine_v1.SearchRequest.ContentSearchSpec(
-            snippet_spec=discoveryengine_v1.SearchRequest.ContentSearchSpec.SnippetSpec(
-                return_snippet=True
-            ),
-            search_result_mode=discoveryengine_v1.SearchRequest.ContentSearchSpec.SearchResultMode.CHUNKS,
-        ),
-    )
-    response = discovery_client.search(request=request)
-
     processed = []
-    for page in response.pages:
-        for result in page.results:
-            relevance = 0.0
-            if result.model_scores and hasattr(
-                result.model_scores.get('relevance_score'), 'values'
-            ):
-                relevance = float(result.model_scores.get('relevance_score').values[0])
 
-            link = result.chunk.document_metadata.uri
-            filename = urlparse(link).path.split('/')[-1]
-            regulation = next(
-                (prefix for prefix in REGULATIONS if filename.startswith(prefix)), ''
-            )
-            processed.append(
-                {
-                    'relevance': relevance,
-                    'regulation': regulation,
-                    'filename': filename,
-                    'page_start': result.chunk.page_span.page_start,
-                    'page_end': result.chunk.page_span.page_end,
-                    'snippet': result.chunk.content,
-                }
-            )
+    page_token = ''
 
-    processed.sort(key=lambda x: x['relevance'], reverse=True)
+    while True:
+        request = discoveryengine_v1.SearchRequest(
+            serving_config=serving_config,
+            query=query_text,
+            content_search_spec=discoveryengine_v1.SearchRequest.ContentSearchSpec(
+                snippet_spec=discoveryengine_v1.SearchRequest.ContentSearchSpec.SnippetSpec(
+                    return_snippet=True
+                ),
+                search_result_mode=discoveryengine_v1.SearchRequest.ContentSearchSpec.SearchResultMode.CHUNKS,
+            ),
+            page_token=page_token
+        )
+
+        response = discovery_client.search(request=request)
+
+        for page in response.pages:
+            for result in page.results:
+                relevance_score = 0.0
+                if result.chunk.relevance_score:
+                    relevance_score = float(result.chunk.relevance_score)
+
+                link = result.chunk.document_metadata.uri
+                filename = urlparse(link).path.split('/')[-1]
+                regulation = next(
+                    (prefix for prefix in REGULATIONS if filename.startswith(prefix)), ''
+                )
+
+                processed.append(
+                    {
+                        'regulation': regulation,
+                        'filename': filename,
+                        'snippet': result.chunk.content,
+                        'relevance_score': relevance_score,
+                    }
+                )
+
+        if not response.next_page_token:
+            break
+
+        page_token = response.next_page_token
+
+    processed.sort(key=lambda x: x['relevance_score'], reverse=True)
 
     print(f'Discovery processed => {len(processed)}')
 
-    return [el for el in processed if el['relevance'] > DISCOVERY_RELEVANCE_THRESHOLD]
+    return [
+        el for el in processed if el['relevance_score'] > DISCOVERY_RELEVANCE_THRESHOLD
+    ]
 
 
 def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str, Any]]:
@@ -347,12 +356,11 @@ def _format_disc_results(
                 'change_analysis_near_duplicate_id': '',
                 'regulations': [
                     {
-                        'regulation': res.get('regulation', 'NA'),
+                        'regulation': res.get('regulation', None),
                         'source': {
-                            'filename': res.get('filename', 'NA'),
-                            'page_start': res.get('page_start', 'NA'),
-                            'page_end': res.get('page_end', 'NA'),
-                            'snippet': res.get('snippet', 'NA'),
+                            'filename': res.get('filename', None),
+                            'snippet': res.get('snippet', None),
+                            'relevance_score': res.get('relevance_score', None),
                         },
                     }
                 ],
