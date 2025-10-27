@@ -27,15 +27,14 @@ FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 DISCOVERY_RELEVANCE_THRESHOLD = float(os.getenv('DISCOVERY_RELEVANCE_THRESHOLD'))
+FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
+GENAI_MODEL = os.getenv('GENAI_MODEL')
+GENAI_API_VERSION = os.getenv('GENAI_API_VERSION')
+GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
 
 # Tunables (safe defaults for speed and cost-efficiency)
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
-FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
-
-GENAI_MODEL = 'gemini-2.5-flash'
-GENAI_API_VERSION = 'v1'
-GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
@@ -116,6 +115,7 @@ def _firestore_commit_many(
         batch.set(doc_ref, data)
         count += 1
         if count >= FIRESTORE_COMMIT_CHUNK:
+            print(f'Firestore => committing {count} documents')
             batch.commit()
             batch = firestore_client.batch()
             count = 0
@@ -251,7 +251,7 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
                 ),
                 search_result_mode=discoveryengine_v1.SearchRequest.ContentSearchSpec.SearchResultMode.CHUNKS,
             ),
-            page_token=page_token
+            page_token=page_token,
         )
 
         response = discovery_client.search(request=request)
@@ -265,7 +265,8 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
                 link = result.chunk.document_metadata.uri
                 filename = urlparse(link).path.split('/')[-1]
                 regulation = next(
-                    (prefix for prefix in REGULATIONS if filename.startswith(prefix)), ''
+                    (prefix for prefix in REGULATIONS if filename.startswith(prefix)),
+                    '',
                 )
 
                 processed.append(
