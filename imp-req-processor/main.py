@@ -609,7 +609,7 @@ def process_implicit_requirements(request):
 
         _mark_duplicates(project_id, version, implicit_reqs)
 
-        _update_firestore_status(project_id, version, 'CONIRM_IMP_REQ_EXTRACT')
+        _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
 
         return (
             json.dumps(
