@@ -37,6 +37,7 @@ GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
 # Tunables (safe defaults for speed and cost-efficiency)
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
+MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
@@ -123,9 +124,6 @@ def _get_document_size_approx(data: Dict[str, Any]) -> int:
     except Exception as e:
         logging.warning(f'Failed to serialize document data for size check. Error: {e}')
         return -1
-
-
-MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 
 
 @_retry(max_attempts=3)
