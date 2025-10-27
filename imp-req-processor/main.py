@@ -2,12 +2,11 @@ import os
 import json
 import time
 import datetime
-from datetime import date
 import logging
 import functools
 import concurrent.futures as futures
 from urllib.parse import urlparse
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Iterable, TypeVar
 
 import functions_framework
 
@@ -34,10 +33,10 @@ GENAI_MODEL = os.getenv('GENAI_MODEL')
 GENAI_API_VERSION = os.getenv('GENAI_API_VERSION')
 GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
 
-# Tunables (safe defaults for speed and cost-efficiency)
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
-MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
+MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
+EMBEDDING_BATCH_SIZE = 150
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
@@ -103,6 +102,15 @@ def _retry(max_attempts: int = 3, base_delay: float = 0.5):
     return deco
 
 
+T = TypeVar('T')
+
+
+def _chunk_list(data: List[T], size: int) -> Iterable[List[T]]:
+    '''Yield successive n-sized chunks from a list.'''
+    for i in range(0, len(data), size):
+        yield data[i : i + size]
+
+
 def _update_firestore_status(project_id: str, version: str, status: str) -> None:
     '''Updates the status of a project version in Firestore.'''
     doc_ref = firestore_client.document('projects', project_id, 'versions', version)
@@ -111,7 +119,7 @@ def _update_firestore_status(project_id: str, version: str, status: str) -> None
 
 
 def _firestore_json_converter(obj: Any) -> str:
-    if isinstance(obj, (datetime, date)):
+    if isinstance(obj, (datetime.datetime, datetime.date)):
         return obj.isoformat()
 
     raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
@@ -236,7 +244,7 @@ def _refine_requirement_with_gemini(text: str) -> List[str]:
             f'Gemini refinement failed for text: \'{text[:50]}...\'. Error: {e}'
         )
 
-        return text
+        return [text]
 
 
 def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -246,6 +254,7 @@ def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     texts_to_refine = [res.get('snippet', '') for res in results]
 
     with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        # Note: _refine_requirement_with_gemini returns a list
         refined_text_responses = list(
             ex.map(_refine_requirement_with_gemini, texts_to_refine)
         )
@@ -254,7 +263,9 @@ def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
     for candidate, refined_texts in zip(results, refined_text_responses):
         for refined_text in refined_texts:
-            refined_candidates.append({**candidate, 'refined_text': refined_text})
+            new_candidate = candidate.copy()
+            new_candidate['refined_text'] = refined_text
+            refined_candidates.append(new_candidate)
 
     print('Refinement complete. Final candidates =>', len(refined_candidates))
 
@@ -262,32 +273,34 @@ def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 @_retry(max_attempts=3)
-def _generate_embedding(text: str) -> List[float]:
-    '''Generates a vector embedding for a given text using the GenAI API.'''
-    try:
-        if not text:
-            return []
+def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
+    '''Generates vector embeddings for a list of texts using a single batch API call.'''
+    if not texts:
+        return []
 
-        # Use the same timeout mechanism as generation calls for safety
+    original_length = len(texts)
+
+    try:
+        contents = [Content(parts=[Part(text=t)]) for t in texts]
+
         with futures.ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(
                 lambda: genai_client.models.embed_content(
                     model=EMBEDDING_MODEL,
-                    contents=[Content(parts=[Part(text=text)])],
+                    contents=contents,
                 )
             )
             response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
 
-        # The response is a list of ContentEmbedding objects (one per text input).
-        embeddings = response.embeddings
-        if embeddings:
-            return embeddings[0].values
-        return []
+        batch_embeddings = [e.values for e in response.embeddings]
+
+        return batch_embeddings
+
     except Exception as e:
         logging.exception(
-            f'Embedding generation failed for text: \'{text}...\'. Error: {e}'
+            f'Batch embedding generation failed for {len(texts)} texts. Error: {e}'
         )
-        return []
+        return [[]] * original_length
 
 
 @_retry(max_attempts=3)
@@ -437,12 +450,25 @@ def _write_reqs_to_firestore(
     project_id: str, version: str, requirements: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
 
-    print(f'Generating embeddings for {len(requirements)} requirements...')
+    print(
+        f'Generating embeddings for {len(requirements)} requirements using batching...'
+    )
 
-    texts_to_embed = [req.get('requirement', '') for req in requirements]
+    texts_to_embed = [
+        req.get('requirement') for req in requirements if req.get('requirement', '')
+    ]
+    embedding_vectors = []
 
-    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
+    text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
+
+    for i, batch in enumerate(text_batches):
+        logging.info(
+            f'Embedding batch {i+1} of {len(texts_to_embed)//EMBEDDING_BATCH_SIZE + 1} with {len(batch)} items.'
+        )
+
+        batch_results = _generate_embedding_batch(batch)
+
+        embedding_vectors.extend(batch_results)
 
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
