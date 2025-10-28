@@ -4,7 +4,7 @@ import time
 import logging
 import functools
 import concurrent.futures as futures
-from typing import Any, Dict, List, Iterator
+from typing import Any, Dict, List
 
 import functions_framework
 from google import genai
@@ -92,16 +92,26 @@ def _call_genai_for_snippet(snippet: Dict[str, str]) -> List[Dict[str, Any]]:
     text_to_analyze = snippet.get('text_used', '')
 
     if not text_to_analyze or len(text_to_analyze.split()) <= 15:
-        logging.info(f'Skipping snippet, too short: \'{text_to_analyze[:50]}...\'')
+        logging.info(f'Skipping snippet, too short: \'{text_to_analyze}\'')
         return []
 
     prompt = f'''
-    You are a software requirements analyst for medical devices.
-    Analyze the single, provided text snippet. Do not invent any new requirements or derive implicit requirements.
-    Your sole task is to take the text, split it into its constituent requirements if multiple exist, and categorize each one. If not, return the original provided text.
+    You are a software requirements analyst for medical software/devices. Analyze the single, provided text snippet.
+    DO NOT DERIVE ANY REGULATORY REQUIREMENTS.
+    Your sole task is to take the text, break it into multiple requirements if multiple exist, 
+    and categorize each one. If not possible to split, return the original provided text.
 
-    Categorize into: {', '.join(REQUIREMENT_TYPES)}.
-    If none fit, default to 'non-functional'.
+    Make sure the rewritten requirement is size is LESS THAN 300 CHARACTERS.
+    The rewritten requirement must be clear, concise, verifiable, and written in
+    the third person (e.g., \'The system shall...\' or \'The device must...\'). 
+    Remove all conversational language, first/second/third-person comments, 
+    introductions, conclusions, or narrative elements. Focus only on the core action or constraint.
+
+    IF NEEDED, generate usability/ user interface/ human factors/ accessibility/ any risk factors based requirments
+    for the text snippet provided. IF NOT NEEDED for the provided text, DO NOT GENERATE ANY.
+
+    Categorize each requirement into: {', '.join(REQUIREMENT_TYPES)}.
+    If none fit, default to 'functional'.
 
     Return ONLY a valid JSON array of requirements, each with the keys 'requirement' and 'requirement_type'.
 
