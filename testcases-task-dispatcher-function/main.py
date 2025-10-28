@@ -116,7 +116,11 @@ def process_for_testcases(request):
                                 t_id,
                             ),
                             {
-                                'title': f'[DEPRECATED] {title}' if not title.startswith('[DEPRECATED]') else title,
+                                'title': (
+                                    f'[DEPRECATED] {title}'
+                                    if not title.startswith('[DEPRECATED]')
+                                    else title
+                                ),
                                 'change_analysis_status': 'DEPRECATED',
                                 'change_analysis_status_reason': 'Its requirement was either MODIFIED/DEPRECATED/IGNORED',
                             },
@@ -242,7 +246,7 @@ def process_for_testcases(request):
 
     except Exception as e:
         firestore_client.document(f'projects/{project_id}/versions/{version}').update(
-            {'status': 'CONFIRM_REQ_EXTRACT_RETRY'}
+            {'status': 'ERR_TESTCASE_CREATION'}
         )
 
         logging.exception(e)
