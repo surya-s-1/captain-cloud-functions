@@ -270,8 +270,8 @@ def _load_newly_uploaded_exp_requirements(
 
     with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
         batch_results = list(ex.map(_generate_embedding_batch, text_batches))
-
-        embedding_vectors.extend(batch_results)
+        for batch in batch_results:
+            embedding_vectors.extend(batch)
 
     final_list = []
     for i, (r, embedding_vector) in enumerate(

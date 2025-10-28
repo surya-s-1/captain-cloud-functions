@@ -417,19 +417,15 @@ def _format_disc_results(
     '''Transforms Discovery Engine results (refined by Gemini) into persistence format.'''
 
     formatted_list = []
-
     embedding_vectors = []
 
     texts_to_embed = [res.get('refined_text', '') for res in results]
-
-    embedding_vectors = []
-
     text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
 
     with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
         batch_results = list(ex.map(_generate_embedding_batch, text_batches))
-
-        embedding_vectors.extend(batch_results)
+        for batch in batch_results:
+            embedding_vectors.extend(batch)
 
     for idx, (res, embedding_vector) in enumerate(zip(results, embedding_vectors)):
         parent_req = res.pop('explicit_requirement_id', None)

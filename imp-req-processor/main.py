@@ -483,8 +483,8 @@ def _write_reqs_to_firestore(
 
     with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
         batch_results = list(ex.map(_generate_embedding_batch, text_batches))
-
-        embedding_vectors.extend(batch_results)
+        for batch in batch_results:
+            embedding_vectors.extend(batch)
 
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
