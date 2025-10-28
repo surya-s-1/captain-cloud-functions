@@ -15,7 +15,7 @@ from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
 OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
-MAX_INPUT_CHARS_FOR_CONTEXT = int(os.getenv('MAX_INPUT_CHARS_FOR_CONTEXT'), '600000')
+MAX_INPUT_CHARS_FOR_CONTEXT = int(os.getenv('MAX_INPUT_CHARS_FOR_CONTEXT', '600000'))
 
 # --- Clients ---
 storage_client = storage.Client()
