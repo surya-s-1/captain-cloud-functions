@@ -258,11 +258,16 @@ def process_requirements_phase_1(request):
 
         logging.info(f'Loaded {len(extracted_file_data)} files data.')
 
+        _update_firestore_status(project_id, version, 'START_CONTEXT_GENERATION')
+
         system_context = _call_genai_for_context(extracted_file_data)
 
         logging.info(f'System Context for all snippets: {system_context}')
 
+        _update_firestore_status(project_id, version, 'START_REQ_EXTRACTION')
+
         all_snippets_to_process: List[Dict[str, str]] = []
+
         for file_data in extracted_file_data:
             file_name = file_data.get('file_name', 'unknown')
             for snippet_data in file_data.get('extracted_text', []):
@@ -298,6 +303,8 @@ def process_requirements_phase_1(request):
         logging.info(
             f'Extracted {len(all_requirements)} requirements after splitting/categorizing snippets.'
         )
+
+        _update_firestore_status(project_id, version, 'START_REQ_PERSIST')
 
         # Save to GCS
         output_path = (
