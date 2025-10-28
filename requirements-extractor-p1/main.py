@@ -83,21 +83,77 @@ def _retry(max_attempts: int = 3, base_delay: int = 2):
 
 
 @_retry(max_attempts=3)
-def _call_genai_for_snippet(snippet: Dict[str, str]) -> List[Dict[str, Any]]:
+def _call_genai_for_context(extracted_text_data: List[Dict[str, Any]]) -> str:
     '''
-    Call Gemini for a single text snippet to split it into requirements.
+    Call Gemini to synthesize the System Context Header from all extracted text.
+    '''
+    all_text = []
+
+    # Extract only the 'text' field from all files for context generation
+    for file_data in extracted_text_data:
+        for snippet_data in file_data.get('extracted_text', []):
+            text = snippet_data.get('text', '').strip()
+            # Only include text that is likely a full sentence/snippet, filtering out IDs/headers
+            if text and len(text.split()) > 3:
+                all_text.append(text)
+
+    full_text_for_context = '\n'.join(all_text)
+
+    # Use a concise set of instructions for the prompt
+    context_prompt = f'''
+    You are a software requirements analyst for medical software/devices. Analyze the entire provided set of text snippets.
+    Your sole task is to synthesize a single, concise, and clear **System Context Header** (less than 250 characters) that summarizes the software's:
+    1. Intended Use or Primary Function.
+    2. Target Users (e.g., 'Clinicians', 'Patients', 'Administrators').
+    3. Criticality/Regulatory Keywords (e.g., 'real-time alerts', 'patient data', 'audit', 'security').
+    
+    DO NOT RETURN ANY REQUIREMENTS, just the summary. Format the summary as a single block of text.
+
+    Full Text Snippets for Analysis:
+    ---
+    {full_text_for_context}
+    ---
+    '''
+
+    logging.info('Generating System Context Header...')
+    resp = genai_client.models.generate_content(
+        model=GENAI_MODEL,
+        contents=[Content(parts=[Part(text=context_prompt)], role='user')],
+        # Use a simple text response, not JSON schema, for the context
+    )
+
+    # Clean up the response for use as a header
+    system_context = resp.text.strip().replace('\n', ' ').replace('  ', ' ')
+    logging.info(f'Generated Context: {system_context}')
+
+    return system_context
+
+
+@_retry(max_attempts=3)
+def _call_genai_for_snippet(
+    snippet: Dict[str, str], system_context: str
+) -> List[Dict[str, Any]]:
+    '''
+    Call Gemini for a single text snippet to split it into requirements, using the system_context for better inference.
     The snippet contains 'file_name', 'text_used', and 'location'.
     '''
     # Isolate the text for the prompt
     text_to_analyze = snippet.get('text_used', '')
 
-    if not text_to_analyze or len(text_to_analyze.split()) <= 15:
-        logging.info(f'Skipping snippet, too short: \'{text_to_analyze}\'')
+    if (
+        not text_to_analyze or len(text_to_analyze.split()) <= 4
+    ):
+        logging.info(f'Skipping snippet, too short/non-content: \'{text_to_analyze}\'')
         return []
 
     prompt = f'''
-    You are a software requirements analyst for medical software/devices. Analyze the single, provided text snippet.
-    DO NOT DERIVE ANY REGULATORY REQUIREMENTS.
+    SYSTEM CONTEXT: {system_context}
+
+    You are a software requirements analyst for medical software/devices. Analyze the single, provided text snippet below.
+    
+    **DO NOT DERIVE ANY REQUIREMENTS FROM THE 'SYSTEM CONTEXT' ABOVE.**
+    **Only derive requirements from the 'Input Text Snippet' below.**
+
     Your sole task is to take the text, break it into multiple requirements if multiple exist, 
     and categorize each one. If not possible to split, return the original provided text.
 
@@ -107,7 +163,7 @@ def _call_genai_for_snippet(snippet: Dict[str, str]) -> List[Dict[str, Any]]:
     Remove all conversational language, first/second/third-person comments, 
     introductions, conclusions, or narrative elements. Focus only on the core action or constraint.
 
-    IF NEEDED, generate usability/ user interface/ human factors/ accessibility/ any risk factors based requirments
+    IF NEEDED, generate usability/ user interface/ human factors/ accessibility/ any risk factors based requirements
     for the text snippet provided. IF NOT NEEDED for the provided text, DO NOT GENERATE ANY.
 
     Categorize each requirement into: {', '.join(REQUIREMENT_TYPES)}.
@@ -126,8 +182,9 @@ def _call_genai_for_snippet(snippet: Dict[str, str]) -> List[Dict[str, Any]]:
         contents=[Content(parts=[Part(text=prompt)], role='user')],
         config=GenerateContentConfig(
             response_mime_type='application/json',
-            response_json_schema=REQUIREMENT_SCHEMA
+            response_json_schema=REQUIREMENT_SCHEMA,
         ),
+        timeout=GENAI_TIMEOUT,
     )
 
     extracted_requirements = json.loads(resp.text)
@@ -158,7 +215,7 @@ def process_requirements_phase_1(request):
     Main HTTP entrypoint for requirements extraction Phase 1.
     It orchestrates the loading, processing, and saving of requirements.
     '''
-    project_id, version = None, None
+    project_id, version, system_context = None, None, ''
 
     try:
         payload = request.get_json(silent=True) or {}
@@ -186,6 +243,10 @@ def process_requirements_phase_1(request):
 
         logging.info(f'Loaded {len(extracted_file_data)} files data.')
 
+        system_context = _call_genai_for_context(extracted_file_data)
+
+        logging.info(f'System Context for all snippets: {system_context}')
+
         all_snippets_to_process: List[Dict[str, str]] = []
         for file_data in extracted_file_data:
             file_name = file_data.get('file_name', 'unknown')
@@ -193,7 +254,9 @@ def process_requirements_phase_1(request):
                 all_snippets_to_process.append(
                     {
                         'file_name': file_name,
-                        'text_used': snippet_data.get('text', ''),
+                        'text_used': snippet_data.get(
+                            'text', ''
+                        ).strip(),
                         'location': snippet_data.get('location', 'Unknown'),
                     }
                 )
@@ -202,13 +265,18 @@ def process_requirements_phase_1(request):
             f'Generated {len(all_snippets_to_process)} total snippets for processing.'
         )
 
-        # Process each snippet individually in parallel
+        # 3. Process each snippet individually in parallel
         all_requirements: List[Dict[str, Any]] = []
 
-        # Use ThreadPoolExecutor to run _call_genai_for_snippet on every item
+        # Create a partial function with the fixed system_context argument
+        partial_genai_call = functools.partial(
+            _call_genai_for_snippet, system_context=system_context
+        )
+
+        # Use ThreadPoolExecutor to run the partial function on every snippet
         with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
             results_iterator = ex.map(
-                _call_genai_for_snippet, all_snippets_to_process, timeout=GENAI_TIMEOUT
+                partial_genai_call, all_snippets_to_process, timeout=GENAI_TIMEOUT
             )
 
             for result in results_iterator:
