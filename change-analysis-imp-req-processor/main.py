@@ -2,13 +2,16 @@ import os
 import json
 import time
 import logging
+import datetime
 import functools
 import concurrent.futures as futures
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Iterable, TypeVar
 from urllib.parse import urlparse
 from google import genai
 from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 from google.cloud import firestore, discoveryengine_v1
+from google.cloud.firestore_v1.transforms import Sentinel
+
 import functions_framework
 
 # from dotenv import load_dotenv
@@ -31,6 +34,8 @@ GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
 # Constants
 REGULATIONS = ['FDA', 'IEC62304', 'ISO9001', 'ISO13485', 'ISO27001', 'SaMD']
 MAX_WORKERS = 16
+MAX_DOC_SIZE_BYTES = 1048576 * 0.95
+EMBEDDING_BATCH_SIZE = 150
 
 SOURCE_TYPE_IMPLICIT = 'implicit'
 
@@ -110,23 +115,85 @@ def _update_version_status(project_id: str, version: str, status: str) -> None:
     doc_ref.set({'status': status}, merge=True)
     print(f'Status => {status}')
 
+T = TypeVar('T')
 
+def _chunk_list(data: List[T], size: int) -> Iterable[List[T]]:
+    '''Yield successive n-sized chunks from a list.'''
+    for i in range(0, len(data), size):
+        yield data[i : i + size]
+
+
+def _firestore_json_converter(obj: Any) -> str:
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+
+    if isinstance(obj, bytes):
+        return obj.decode('utf-8')
+
+    if isinstance(obj, Sentinel):
+        return '<FIRESTORE_SENTINEL_PLACEHOLDER>'
+
+    if isinstance(obj, (list, tuple)):
+        return [_firestore_json_converter(item) for item in obj]
+
+    if isinstance(obj, dict):
+        return {k: _firestore_json_converter(v) for k, v in obj.items()}
+
+    raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
+
+
+def _get_document_size_approx(data: Dict[str, Any]) -> int:
+    try:
+        data_json = json.dumps(data, default=_firestore_json_converter)
+        return len(data_json.encode('utf-8'))
+    except Exception as e:
+        logging.warning(f'Failed to serialize document data for size check. Error: {e}')
+        return -1
+
+
+@_retry(max_attempts=3)
 def _firestore_commit_many(
     doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
 ) -> None:
-    '''Commits a list of documents to Firestore in batches using batch.set().'''
     batch = firestore_client.batch()
-    count = 0
+    batch_count = 0
+    skipped_count = 0
+
+    logging.info(f'Starting commit for {len(doc_tuples)} total documents...')
+
     for doc_ref, data in doc_tuples:
-        batch.set(doc_ref, data, merge=True)  # Use merge=True for updates/sets
-        count += 1
-        if count >= FIRESTORE_COMMIT_CHUNK:
-            print(f'Firestore => committing {count} documents')
+        data_size_bytes = _get_document_size_approx(data)
+
+        if data_size_bytes == -1:
+            logging.error(f'SKIPPING: {doc_ref.path} due to error during size check.')
+            skipped_count += 1
+            continue
+
+        if data_size_bytes > MAX_DOC_SIZE_BYTES:
+            logging.warning(
+                f'SKIPPING: {doc_ref.path}. '
+                f'Approximate size ({data_size_bytes / 1024:.2f} KiB) exceeds the '
+                f'conservative limit ({MAX_DOC_SIZE_BYTES / 1024:.2f} KiB).'
+            )
+            skipped_count += 1
+            continue
+
+        batch.set(doc_ref, data)
+        batch_count += 1
+
+        if batch_count >= FIRESTORE_COMMIT_CHUNK:
+            logging.info(f'Firestore => committing {batch_count} documents...')
             batch.commit()
             batch = firestore_client.batch()
-            count = 0
-    if count:
+            batch_count = 0
+
+    if batch_count:
+        logging.info(f'Firestore => committing final {batch_count} documents...')
         batch.commit()
+
+    logging.warning(
+        f'Commit finished. Total documents skipped due to size/error: {skipped_count}'
+    )
 
 
 def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -137,6 +204,37 @@ def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
     if magnitude_v1 == 0 or magnitude_v2 == 0:
         return 0.0
     return dot_product / (magnitude_v1 * magnitude_v2)
+
+
+@_retry(max_attempts=3)
+def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
+    '''Generates vector embeddings for a list of texts using a single batch API call.'''
+    if not texts:
+        return []
+
+    original_length = len(texts)
+
+    try:
+        contents = [Content(parts=[Part(text=t)]) for t in texts]
+
+        with futures.ThreadPoolExecutor(max_workers=1) as ex:
+            future = ex.submit(
+                lambda: genai_client.models.embed_content(
+                    model=EMBEDDING_MODEL,
+                    contents=contents,
+                )
+            )
+            response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
+
+        batch_embeddings = [e.values for e in response.embeddings]
+
+        return batch_embeddings
+
+    except Exception as e:
+        logging.exception(
+            f'Batch embedding generation failed for {len(texts)} texts. Error: {e}'
+        )
+        return [[]] * original_length
 
 
 @_retry(max_attempts=3)
@@ -331,10 +429,18 @@ def _format_disc_results(
     '''Transforms Discovery Engine results (refined by Gemini) into persistence format.'''
 
     formatted_list = []
+    embedding_vectors = []
     texts_to_embed = [res.get('refined_text', '') for res in results]
+    text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
 
-    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
+    for i, batch in enumerate(text_batches):
+        logging.info(
+            f'Embedding batch {i+1} of {len(texts_to_embed)//EMBEDDING_BATCH_SIZE + 1} with {len(batch)} items.'
+        )
+
+        batch_results = _generate_embedding_batch(batch)
+
+        embedding_vectors.extend(batch_results)
 
     for idx, (res, embedding_vector) in enumerate(zip(results, embedding_vectors)):
         parent_req = res.pop('explicit_requirement_id', None)
@@ -369,6 +475,7 @@ def _format_disc_results(
                 'created_at': firestore.SERVER_TIMESTAMP,
             }
         )
+
     return formatted_list
 
 
