@@ -2,10 +2,11 @@ import os
 import json
 import time
 import logging
+import datetime
 import functools
 import concurrent.futures as futures
 from urllib.parse import urlparse
-from typing import Any, Dict, Iterator, List, Tuple
+from typing import Any, Dict, TypeVar, Iterable, List, Tuple
 
 import functions_framework
 
@@ -15,6 +16,7 @@ import functions_framework
 from google import genai
 from google.genai.types import HttpOptions, Part, Content
 from google.cloud import storage, firestore
+from google.cloud.firestore_v1.transforms import Sentinel
 
 # =====================
 # Environment variables
@@ -23,13 +25,15 @@ GOOGLE_CLOUD_PROJECT = os.getenv('GOOGLE_CLOUD_PROJECT')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
+FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
 
 # Tunables (safe defaults for speed and cost-efficiency)
-MAX_WORKERS = 16  # Thread pool concurrency for parallel API calls
-FIRESTORE_COMMIT_CHUNK = 450  # <= 500 per batch write limit
+MAX_WORKERS = 16
+MAX_DOC_SIZE_BYTES = 1048576 * 0.95
+EMBEDDING_BATCH_SIZE = 150
 
 GENAI_API_VERSION = 'v1'
-EMBED_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
+GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
 
 # =====================
 # Clients
@@ -105,28 +109,85 @@ def normalize_req_dict(req: Any) -> Any:
         fixed[clean_key] = normalize_req_dict(v)
     return fixed
 
+T = TypeVar('T')
 
-def _chunk(lst: list, n: int) -> Iterator[list]:
-    '''Yields successive n-sized chunks from a list.'''
-    for i in range(0, len(lst), n):
-        yield lst[i : i + n]
+def _chunk_list(data: List[T], size: int) -> Iterable[List[T]]:
+    '''Yield successive n-sized chunks from a list.'''
+    for i in range(0, len(data), size):
+        yield data[i : i + size]
 
 
+def _firestore_json_converter(obj: Any) -> str:
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+
+    if isinstance(obj, bytes):
+        return obj.decode('utf-8')
+
+    if isinstance(obj, Sentinel):
+        return '<FIRESTORE_SENTINEL_PLACEHOLDER>'
+
+    if isinstance(obj, (list, tuple)):
+        return [_firestore_json_converter(item) for item in obj]
+
+    if isinstance(obj, dict):
+        return {k: _firestore_json_converter(v) for k, v in obj.items()}
+
+    raise TypeError(f'Object of type {type(obj).__name__} is not JSON serializable')
+
+
+def _get_document_size_approx(data: Dict[str, Any]) -> int:
+    try:
+        data_json = json.dumps(data, default=_firestore_json_converter)
+        return len(data_json.encode('utf-8'))
+    except Exception as e:
+        logging.warning(f'Failed to serialize document data for size check. Error: {e}')
+        return -1
+
+
+@_retry(max_attempts=3)
 def _firestore_commit_many(
     doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
 ) -> None:
-    '''Commits a list of documents to Firestore in batches.'''
     batch = firestore_client.batch()
-    count = 0
+    batch_count = 0
+    skipped_count = 0
+
+    logging.info(f'Starting commit for {len(doc_tuples)} total documents...')
+
     for doc_ref, data in doc_tuples:
+        data_size_bytes = _get_document_size_approx(data)
+
+        if data_size_bytes == -1:
+            logging.error(f'SKIPPING: {doc_ref.path} due to error during size check.')
+            skipped_count += 1
+            continue
+
+        if data_size_bytes > MAX_DOC_SIZE_BYTES:
+            logging.warning(
+                f'SKIPPING: {doc_ref.path}. '
+                f'Approximate size ({data_size_bytes / 1024:.2f} KiB) exceeds the '
+                f'conservative limit ({MAX_DOC_SIZE_BYTES / 1024:.2f} KiB).'
+            )
+            skipped_count += 1
+            continue
+
         batch.set(doc_ref, data)
-        count += 1
-        if count >= FIRESTORE_COMMIT_CHUNK:
+        batch_count += 1
+
+        if batch_count >= FIRESTORE_COMMIT_CHUNK:
+            logging.info(f'Firestore => committing {batch_count} documents...')
             batch.commit()
             batch = firestore_client.batch()
-            count = 0
-    if count:
+            batch_count = 0
+
+    if batch_count:
+        logging.info(f'Firestore => committing final {batch_count} documents...')
         batch.commit()
+
+    logging.warning(
+        f'Commit finished. Total documents skipped due to size/error: {skipped_count}'
+    )
 
 
 def cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -145,32 +206,34 @@ def cosine_similarity(v1: List[float], v2: List[float]) -> float:
 
 
 @_retry(max_attempts=3)
-def _generate_embedding(text: str) -> List[float]:
-    '''Generates a vector embedding for a given text using the GenAI API.'''
-    try:
-        if not text:
-            return []
+def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
+    '''Generates vector embeddings for a list of texts using a single batch API call.'''
+    if not texts:
+        return []
 
-        # Use the same timeout mechanism as generation calls for safety
+    original_length = len(texts)
+
+    try:
+        contents = [Content(parts=[Part(text=t)]) for t in texts]
+
         with futures.ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(
                 lambda: genai_client.models.embed_content(
                     model=EMBEDDING_MODEL,
-                    contents=[Content(parts=[Part(text=text)])],
+                    contents=contents,
                 )
             )
-            response = future.result(timeout=EMBED_TIMEOUT_SECONDS)
+            response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
 
-        # The response is a list of ContentEmbedding objects (one per text input).
-        embeddings = response.embeddings
-        if embeddings:
-            return embeddings[0].values
-        return []
+        batch_embeddings = [e.values for e in response.embeddings]
+
+        return batch_embeddings
+
     except Exception as e:
         logging.exception(
-            f'Embedding generation failed for text: \'{text}...\'. Error: {e}'
+            f'Batch embedding generation failed for {len(texts)} texts. Error: {e}'
         )
-        return []
+        return [[]] * original_length
 
 
 def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, Any]]:
@@ -225,9 +288,18 @@ def _write_reqs_to_firestore(
     print(f'Generating embeddings for {len(requirements)} requirements...')
 
     texts_to_embed = [req.get('requirement', '') for req in requirements]
+    embedding_vectors = []
 
-    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        embedding_vectors = list(ex.map(_generate_embedding, texts_to_embed))
+    text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
+
+    for i, batch in enumerate(text_batches):
+        logging.info(
+            f'Embedding batch {i+1} of {len(texts_to_embed)//EMBEDDING_BATCH_SIZE + 1} with {len(batch)} items.'
+        )
+
+        batch_results = _generate_embedding_batch(batch)
+
+        embedding_vectors.extend(batch_results)
 
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
