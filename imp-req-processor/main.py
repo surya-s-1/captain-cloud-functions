@@ -115,7 +115,6 @@ def _chunk_list(data: List[T], size: int) -> List[List[T]]:
     chunked_data = []
     for i in range(0, len(data), size):
         chunked_data.append(data[i : i + size])
-
     return chunked_data
 
 
