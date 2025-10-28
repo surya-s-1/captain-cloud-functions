@@ -192,35 +192,39 @@ def _call_genai_for_snippet(
     ```
     '''
 
-    resp = genai_client.models.generate_content(
-        model=GENAI_MODEL,
-        contents=[Content(parts=[Part(text=prompt)], role='user')],
-        config=GenerateContentConfig(
-            response_mime_type='application/json',
-            response_json_schema=REQUIREMENT_SCHEMA,
-        ),
-        timeout=GENAI_TIMEOUT,
-    )
-
-    extracted_requirements = json.loads(resp.text)
-
-    source_info = {
-        'file_name': snippet.get('file_name', 'unknown'),
-        'text_used': snippet.get('text_used', ''),
-        'location': snippet.get('location', 'unknown'),
-    }
-
-    final_requirements = []
-    for req in extracted_requirements:
-        final_requirements.append(
-            {
-                'requirement': req['requirement'],
-                'requirement_type': req['requirement_type'],
-                'sources': [source_info],
-            }
+    with futures.ThreadPoolExecutor(max_workers=1) as ex:
+        future = ex.submit(
+            lambda: genai_client.models.generate_content(
+                model=GENAI_MODEL,
+                contents=[Content(parts=[Part(text=prompt)], role='user')],
+                config=GenerateContentConfig(
+                    response_mime_type='application/json',
+                    response_json_schema=REQUIREMENT_SCHEMA,
+                ),
+            )
         )
 
-    return final_requirements
+        resp = future.result(timeout=GENAI_TIMEOUT)
+
+        extracted_requirements = json.loads(resp.text)
+
+        source_info = {
+            'file_name': snippet.get('file_name', 'unknown'),
+            'text_used': snippet.get('text_used', ''),
+            'location': snippet.get('location', 'unknown'),
+        }
+
+        final_requirements = []
+        for req in extracted_requirements:
+            final_requirements.append(
+                {
+                    'requirement': req['requirement'],
+                    'requirement_type': req['requirement_type'],
+                    'sources': [source_info],
+                }
+            )
+
+        return final_requirements
 
 
 # --- Main Cloud Function ---
