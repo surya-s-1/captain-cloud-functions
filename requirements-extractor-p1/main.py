@@ -15,6 +15,7 @@ from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
 GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
 OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
+MAX_INPUT_CHARS_FOR_CONTEXT = int(os.getenv('MAX_INPUT_CHARS_FOR_CONTEXT'), '600000')
 
 # --- Clients ---
 storage_client = storage.Client()
@@ -99,6 +100,22 @@ def _call_genai_for_context(extracted_text_data: List[Dict[str, Any]]) -> str:
 
     full_text_for_context = '\n'.join(all_text)
 
+    # --- Truncation Logic Added Here ---
+    truncated_text = full_text_for_context
+    is_truncated = False
+
+    if len(full_text_for_context) > MAX_INPUT_CHARS_FOR_CONTEXT:
+        truncated_text = full_text_for_context[:MAX_INPUT_CHARS_FOR_CONTEXT]
+        # Append a note to the model that the text has been cut off
+        truncated_text += '\n\n[...TEXT TRUNCATED HERE. Please synthesize the context header only from the available text.]'
+        is_truncated = True
+
+    if is_truncated:
+        logging.warning(
+            f'Context input text was truncated from {len(full_text_for_context)} '
+            f'to {len(truncated_text)} characters.'
+        )
+
     # Use a concise set of instructions for the prompt
     context_prompt = f'''
     You are a software requirements analyst for medical software/devices. Analyze the entire provided set of text snippets.
@@ -111,7 +128,7 @@ def _call_genai_for_context(extracted_text_data: List[Dict[str, Any]]) -> str:
 
     Full Text Snippets for Analysis:
     ---
-    {full_text_for_context}
+    {truncated_text}
     ---
     '''
 
@@ -265,7 +282,7 @@ def process_requirements_phase_1(request):
             f'Generated {len(all_snippets_to_process)} total snippets for processing.'
         )
 
-        # 3. Process each snippet individually in parallel
+        # Process each snippet individually in parallel
         all_requirements: List[Dict[str, Any]] = []
 
         # Create a partial function with the fixed system_context argument
