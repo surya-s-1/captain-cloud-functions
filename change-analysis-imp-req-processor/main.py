@@ -61,6 +61,8 @@ REFINEMENT_PROMPT = (
     'You are a Medical Quality Assurance Document Specialist. Your task is to take raw text,'
     ' which is often a snippet from a regulatory document or an informal comment, and'
     ' rewrite it into a single, objective, formal software or system requirement.'
+    'Break into multiple requirements if needed.'
+    'Make sure the rewritten requirement is size is less than 300 characters.'
     ' The rewritten requirement must be clear, concise, verifiable, and written in'
     ' the third person (e.g., \'The system shall...\' or \'The device must...\').'
     ' Remove all conversational language, first/second/third-person comments,'
@@ -115,7 +117,9 @@ def _update_version_status(project_id: str, version: str, status: str) -> None:
     doc_ref.set({'status': status}, merge=True)
     print(f'Status => {status}')
 
+
 T = TypeVar('T')
+
 
 def _chunk_list(data: List[T], size: int) -> Iterable[List[T]]:
     '''Yield successive n-sized chunks from a list.'''
