@@ -157,9 +157,7 @@ def _call_genai_for_snippet(
     # Isolate the text for the prompt
     text_to_analyze = snippet.get('text_used', '')
 
-    if (
-        not text_to_analyze or len(text_to_analyze.split()) <= 4
-    ):
+    if not text_to_analyze or len(text_to_analyze.split()) <= 4:
         logging.info(f'Skipping snippet, too short/non-content: \'{text_to_analyze}\'')
         return []
 
@@ -271,9 +269,7 @@ def process_requirements_phase_1(request):
                 all_snippets_to_process.append(
                     {
                         'file_name': file_name,
-                        'text_used': snippet_data.get(
-                            'text', ''
-                        ).strip(),
+                        'text_used': snippet_data.get('text', '').strip(),
                         'location': snippet_data.get('location', 'Unknown'),
                     }
                 )
