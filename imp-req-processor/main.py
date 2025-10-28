@@ -44,7 +44,7 @@ REFINEMENT_PROMPT = (
     'You are a Medical Quality Assurance Document Specialist. Your task is to take raw text, '
     'which is often a snippet from a regulatory document or an informal comment, and '
     'rewrite it into a single, objective, formal software or system requirement. '
-    'Break into multiple requirements if needed.'
+    'Break into multiple requirements (maximum 2) if needed.'
     'Make sure the rewritten requirement is size is less than 300 characters.'
     'The rewritten requirement must be clear, concise, verifiable, and written in '
     'the third person (e.g., \'The system shall...\' or \'The device must...\'). '
