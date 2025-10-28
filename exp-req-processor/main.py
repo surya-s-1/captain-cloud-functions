@@ -109,7 +109,9 @@ def normalize_req_dict(req: Any) -> Any:
         fixed[clean_key] = normalize_req_dict(v)
     return fixed
 
+
 T = TypeVar('T')
+
 
 def _chunk_list(data: List[T], size: int) -> Iterable[List[T]]:
     '''Yield successive n-sized chunks from a list.'''
