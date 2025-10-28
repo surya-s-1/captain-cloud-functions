@@ -6,7 +6,7 @@ import logging
 import functools
 import concurrent.futures as futures
 from urllib.parse import urlparse
-from typing import Any, Dict, List, Tuple, Iterable, TypeVar
+from typing import Any, Dict, List, Tuple, TypeVar
 
 import functions_framework
 
@@ -107,10 +107,16 @@ def _retry(max_attempts: int = 3, base_delay: float = 0.5):
 T = TypeVar('T')
 
 
-def _chunk_list(data: List[T], size: int) -> Iterable[List[T]]:
+def _chunk_list(data: List[T], size: int) -> List[List[T]]:
     '''Yield successive n-sized chunks from a list.'''
+    if not data:
+        return []
+
+    chunked_data = []
     for i in range(0, len(data), size):
-        yield data[i : i + size]
+        chunked_data.append(data[i : i + size])
+
+    return chunked_data
 
 
 def _update_firestore_status(project_id: str, version: str, status: str) -> None:
