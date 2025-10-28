@@ -119,10 +119,16 @@ def _normalize_requirements(req: Any) -> Any:
 T = TypeVar('T')
 
 
-def _chunk_list(data: List[T], size: int) -> Iterable[List[T]]:
+def _chunk_list(data: List[T], size: int) -> List[List[T]]:
     '''Yield successive n-sized chunks from a list.'''
+    if not data:
+        return []
+
+    chunked_data = []
     for i in range(0, len(data), size):
-        yield data[i : i + size]
+        chunked_data.append(data[i : i + size])
+
+    return chunked_data
 
 
 def _firestore_json_converter(obj: Any) -> str:
