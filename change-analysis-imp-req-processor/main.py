@@ -36,6 +36,7 @@ REGULATIONS = ['FDA', 'IEC62304', 'ISO9001', 'ISO13485', 'ISO27001', 'SaMD']
 MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 EMBEDDING_BATCH_SIZE = 150
+MAX_PARALLEL_EMBEDDING_BATCHES = 7
 
 SOURCE_TYPE_IMPLICIT = 'implicit'
 
@@ -242,29 +243,6 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
 
 
 @_retry(max_attempts=3)
-def _generate_embedding(text: str) -> List[float]:
-    '''Generates a vector embedding for a given text using the GenAI API.'''
-    try:
-        if not text:
-            return []
-        with futures.ThreadPoolExecutor(max_workers=1) as ex:
-            future = ex.submit(
-                lambda: genai_client.models.embed_content(
-                    model=EMBEDDING_MODEL,
-                    contents=[Content(parts=[Part(text=text)])],
-                )
-            )
-            response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
-        embeddings = response.embeddings
-        if embeddings:
-            return embeddings[0].values
-        return []
-    except Exception as e:
-        logging.exception(f'Embedding generation failed. Error: {e}')
-        return []
-
-
-@_retry(max_attempts=3)
 def _genai_json_call(model: str, prompt: str, schema: dict) -> dict:
     '''Makes a GenAI call configured for JSON output.'''
     with futures.ThreadPoolExecutor(max_workers=1) as ex:
@@ -433,16 +411,17 @@ def _format_disc_results(
     '''Transforms Discovery Engine results (refined by Gemini) into persistence format.'''
 
     formatted_list = []
+
     embedding_vectors = []
+
     texts_to_embed = [res.get('refined_text', '') for res in results]
+
+    embedding_vectors = []
+
     text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
 
-    for i, batch in enumerate(text_batches):
-        logging.info(
-            f'Embedding batch {i+1} of {len(texts_to_embed)//EMBEDDING_BATCH_SIZE + 1} with {len(batch)} items.'
-        )
-
-        batch_results = _generate_embedding_batch(batch)
+    with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
+        batch_results = list(ex.map(_generate_embedding_batch, text_batches))
 
         embedding_vectors.extend(batch_results)
 

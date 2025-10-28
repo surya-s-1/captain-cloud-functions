@@ -31,6 +31,7 @@ FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
 MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 EMBEDDING_BATCH_SIZE = 150
+MAX_PARALLEL_EMBEDDING_BATCHES = 7
 
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
@@ -294,12 +295,8 @@ def _write_reqs_to_firestore(
 
     text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
 
-    for i, batch in enumerate(text_batches):
-        logging.info(
-            f'Embedding batch {i+1} of {len(texts_to_embed)//EMBEDDING_BATCH_SIZE + 1} with {len(batch)} items.'
-        )
-
-        batch_results = _generate_embedding_batch(batch)
+    with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
+        batch_results = list(ex.map(_generate_embedding_batch, text_batches))
 
         embedding_vectors.extend(batch_results)
 

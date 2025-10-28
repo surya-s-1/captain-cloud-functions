@@ -38,6 +38,7 @@ REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 EMBEDDING_BATCH_SIZE = 150
+MAX_PARALLEL_EMBEDDING_BATCHES = 7
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
@@ -470,16 +471,13 @@ def _write_reqs_to_firestore(
     texts_to_embed = [
         req.get('requirement') for req in requirements if req.get('requirement', '')
     ]
+
     embedding_vectors = []
 
     text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
 
-    for i, batch in enumerate(text_batches):
-        logging.info(
-            f'Embedding batch {i+1} of {len(texts_to_embed)//EMBEDDING_BATCH_SIZE + 1} with {len(batch)} items.'
-        )
-
-        batch_results = _generate_embedding_batch(batch)
+    with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
+        batch_results = list(ex.map(_generate_embedding_batch, text_batches))
 
         embedding_vectors.extend(batch_results)
 
