@@ -38,7 +38,8 @@ DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 DISCOVERY_RELEVANCE_THRESHOLD = float(os.getenv('DISCOVERY_RELEVANCE_THRESHOLD'))
 FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
 EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
-EMBEDDING_OUTPUT_DIMENTION = int(os.getenv('EMBEDDING_OUTPUT_DIMENTION'))
+EMBEDDING_OUTPUT_DIMENSION = int(os.getenv('EMBEDDING_OUTPUT_DIMENSION'))
+EMBEDDING_TIMEOUT_SECONDS = int(os.getenv('EMBEDDING_TIMEOUT_SECONDS'))
 MAX_PARALLEL_EMBEDDING_BATCHES = int(os.getenv('MAX_PARALLEL_EMBEDDING_BATCHES'))
 GENAI_MODEL = os.getenv('GENAI_MODEL')
 GENAI_API_VERSION = os.getenv('GENAI_API_VERSION')
@@ -341,19 +342,20 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
 
         perf_start = time.time()
 
-        with futures.ThreadPoolExecutor(max_workers=1) as ex:
+        with futures.ThreadPoolExecutor() as ex:
             future = ex.submit(
                 lambda: genai_client.models.embed_content(
                     model=EMBEDDING_MODEL,
                     contents=contents,
                     config=EmbedContentConfig(
                         auto_truncate=True,
-                        output_dimensionality=EMBEDDING_OUTPUT_DIMENTION,
+                        output_dimensionality=EMBEDDING_OUTPUT_DIMENSION,
                         task_type='SEMANTIC_SIMILARITY',
                     ),
                 )
             )
-            response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
+
+            response = future.result(timeout=EMBEDDING_TIMEOUT_SECONDS)
 
         batch_embeddings = [e.values for e in response.embeddings]
 
@@ -369,6 +371,7 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
         logger.exception(
             f'Batch embedding generation failed for {len(texts)} texts. Error: {e}'
         )
+
         return [[]] * original_length
 
 
