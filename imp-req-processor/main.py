@@ -8,6 +8,8 @@ import threading
 import concurrent.futures as futures
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Tuple, TypeVar
+import numpy as np
+import faiss
 
 import functions_framework
 
@@ -169,19 +171,18 @@ def _get_document_size_approx(data: Dict[str, Any]) -> int:
 
 
 @_retry(max_attempts=3)
-def _firestore_commit_many(
-    doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
+def _commit_single_batch(
+    batch_doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
 ) -> None:
+    '''Commits a single batch of documents to Firestore.'''
+    if not batch_doc_tuples:
+        return
+
     batch = firestore_client.batch()
     batch_count = 0
     skipped_count = 0
 
-    logger.info(f'Starting commit for {len(doc_tuples)} total documents...')
-    logger.info(
-        f'Approximate number of batches => {len(doc_tuples)//FIRESTORE_COMMIT_CHUNK + 1}'
-    )
-
-    for doc_ref, data in doc_tuples:
+    for doc_ref, data in batch_doc_tuples:
         data_size_bytes = _get_document_size_approx(data)
 
         if data_size_bytes == -1:
@@ -195,35 +196,37 @@ def _firestore_commit_many(
                 f'Approximate size ({data_size_bytes / 1024:.2f} KiB) exceeds the '
                 f'conservative limit ({MAX_DOC_SIZE_BYTES / 1024:.2f} KiB).'
             )
+
             skipped_count += 1
             continue
 
         batch.set(doc_ref, data)
         batch_count += 1
 
-        if batch_count >= FIRESTORE_COMMIT_CHUNK:
-            logger.info(f'Firestore => committing {batch_count} documents...')
-            batch.commit()
-            batch = firestore_client.batch()
-            batch_count = 0
-
-    if batch_count:
-        logger.info(f'Firestore => committing final {batch_count} documents...')
+    if batch_count > 0:
         batch.commit()
+        logger.info(f'Firestore => committed {batch_count} documents in a batch.')
 
-    logger.info(
-        f'Commit finished. Total documents skipped due to size/error: {skipped_count}'
-    )
+    if skipped_count > 0:
+        logger.info(f'Firestore => skipped {skipped_count} documents in a batch.')
 
 
-def cosine_similarity(v1: List[float], v2: List[float]) -> float:
-    '''Calculates the cosine similarity between two vectors using pure Python math.'''
-    dot_product = sum(a * b for a, b in zip(v1, v2))
-    magnitude_v1 = sum(a * a for a in v1) ** 0.5
-    magnitude_v2 = sum(b * b for b in v2) ** 0.5
-    if magnitude_v1 == 0 or magnitude_v2 == 0:
-        return 0.0
-    return dot_product / (magnitude_v1 * magnitude_v2)
+@_retry(max_attempts=3)
+def _firestore_commit_many(
+    doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
+) -> None:
+    '''Commits documents to Firestore in batches, using threading for parallelism.'''
+
+    logger.info(f'Starting commit for {len(doc_tuples)} total documents...')
+
+    chunked_doc_tuples = _chunk_list(doc_tuples, FIRESTORE_COMMIT_CHUNK)
+
+    logger.info(f'Total batches to commit => {len(chunked_doc_tuples)}')
+
+    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        ex.map(_commit_single_batch, chunked_doc_tuples)
+
+    logger.info('Commit finished.')
 
 
 # =====================
@@ -587,6 +590,7 @@ def _mark_duplicates(
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
     '''
     Compares requirement embeddings and marks duplicates in Firestore using vector similarity.
+    Uses Faiss for O(N log N) or better performance.
     Returns (duplicates, originals)
     '''
 
@@ -595,39 +599,131 @@ def _mark_duplicates(
 
     perf_start = time.time()
 
-    # Iterate through each requirement (i)
-    for i in range(len(requirements)):
-        req_i = requirements[i]
+    # 1. Prepare Data and Build Index
+    if not requirements:
+        return [], []
 
-        # Compare req_i against all requirements (j) that came before it (j < i)
-        for j in range(i):
-            req_j = requirements[j]
+    # Filter out requirements that are already duplicates and prepare data
+    original_requirements = [
+        req for req in requirements if not req.get('duplicate', False)
+    ]
 
-            # Skip comparing against a requirement that has already been marked as a duplicate.
-            if req_j.get('duplicate'):
-                continue
+    if len(original_requirements) < 2:
+        # Cannot have duplicates if there's 0 or 1 item
+        return [], requirements
 
-            similarity = cosine_similarity(req_i['embedding'], req_j['embedding'])
+    # Extract embeddings and map index back to original requirement_id
+    embeddings = np.array(
+        [req['embedding'] for req in original_requirements], dtype='float32'
+    )
 
-            if similarity >= DUPE_SIM_THRESHOLD:
-                # req_i is a duplicate of req_j (the earlier one is the original one)
-                # Store the IDs and the source IDs from the duplicate req_i to be merged
-                duplicates_to_update.append(
-                    (
-                        req_i['requirement_id'],
-                        req_j['requirement_id'],
-                        req_i.get('parent_exp_req_ids', []),
-                    )
+    req_ids = [req['requirement_id'] for req in original_requirements]
+
+    dimension = embeddings.shape[1]
+
+    # L2-normalize the embeddings (necessary for using L2 distance as cosine similarity)
+    faiss.normalize_L2(embeddings)
+
+    # Create the index (FlatIndex uses exact search, a good starting point)
+    # For massive scale, you'd use IndexHNSWFlat or IndexIVFFlat for true ANN speedup
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
+
+    # 2. Perform Nearest Neighbors Search (All-vs-All in one go)
+    # k=2 because the nearest neighbor to a vector is always itself (distance 0).
+    # We want the *second* nearest neighbor (if it exists).
+    k = 2
+
+    # D is Distances (Squared L2), I is Indices
+    D, I = index.search(embeddings, k)
+
+    # Set to keep track of already marked duplicates by their index in the 'original_requirements' list
+    marked_indices = set()
+
+    # 3. Process Results
+    # Iterate over the results of the nearest neighbor search
+    for i in range(len(original_requirements)):
+        # Skip if this requirement has already been marked as a duplicate
+        if i in marked_indices:
+            continue
+
+        # The first index I[i, 0] is always 'i' itself (nearest neighbor)
+        # The second index I[i, 1] is the near_duplicate_index
+        near_duplicate_index = I[i, 1]
+
+        # The squared L2 distance D[i, 1] is between req_i and req_j (its nearest neighbor)
+        sq_dist = D[i, 1]
+
+        # Squared L2 distance (d^2) and Cosine Similarity (cos_sim) are related for
+        # L2-normalized vectors (where ||v||=1):
+        # d^2 = 2 * (1 - cos_sim) => cos_sim = 1 - (d^2 / 2)
+        # A squared L2 distance of 0.0 corresponds to a cos_sim of 1.0.
+        # Threshold: 1 - (DUPE_SIM_THRESHOLD) * 2
+        # Example: If DUPE_SIM_THRESHOLD is 0.95, max_sq_dist is 2 * (1 - 0.95) = 0.1
+        MAX_SQ_DIST = 2 * (1 - DUPE_SIM_THRESHOLD)
+
+        # Check if the near neighbor is close enough and is not the vector itself
+        # Note: I[i, 1] < len(original_requirements) check is for safety,
+        # Faiss returns max index if k > N.
+        if near_duplicate_index < len(original_requirements) and sq_dist <= MAX_SQ_DIST:
+
+            # Found a match! The original one should be the one that appeared earlier (lower index i)
+            # The *duplicate* is the one being marked.
+
+            req_i = original_requirements[i]
+            req_j = original_requirements[near_duplicate_index]
+
+            # Determine which is the 'original' and which is the 'duplicate' based on
+            # their position in the *original list* of requirements passed to the function.
+            # We assume the one with the earlier index in the *original* list is the 'original'.
+
+            # Find the original index for sorting logic
+            original_i_index = next(
+                (
+                    idx
+                    for idx, req in enumerate(requirements)
+                    if req['requirement_id'] == req_i['requirement_id']
                 )
+            )
+            original_j_index = next(
+                (
+                    idx
+                    for idx, req in enumerate(requirements)
+                    if req['requirement_id'] == req_j['requirement_id']
+                )
+            )
 
-                # Mark locally to prevent req_i from being a original source for future items
-                # Once a match is found, we mark it and move to the next req_i
-                req_i['duplicate'] = True
-                break
+            if original_i_index < original_j_index:
+                # req_j is the duplicate of req_i (the earlier one)
+                duplicate_req = req_j
+                original_req = req_i
+                duplicate_idx = near_duplicate_index
+            else:
+                # req_i is the duplicate of req_j (the earlier one)
+                duplicate_req = req_i
+                original_req = req_j
+                duplicate_idx = i
 
-    perf_end = time.time()
+            # Store the IDs and the source IDs from the duplicate to be merged
+            duplicates_to_update.append(
+                (
+                    duplicate_req['requirement_id'],
+                    original_req['requirement_id'],
+                    duplicate_req.get('parent_exp_req_ids', []),
+                )
+            )
 
-    logger.info(f'Time to find duplicates (in seconds): {perf_end - perf_start}')
+            # Mark the duplicate's index to prevent it from being processed as an original later
+            marked_indices.add(duplicate_idx)
+
+            # Mark locally to filter results later
+            duplicate_req['duplicate'] = True
+
+    perf_end_search = time.time()
+
+    logger.info(
+        f'Time to find duplicates with Faiss (in seconds): {perf_end_search - perf_start}'
+    )
 
     if not duplicates_to_update:
         logger.info('No duplicates found using vector embeddings in this batch.')
@@ -641,6 +737,7 @@ def _mark_duplicates(
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
+
         batch.update(
             doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id}
         )
@@ -711,15 +808,43 @@ def _fetch_explicit_reqs(project_id: str, version: str) -> List[Dict[str, Any]]:
     return req_list
 
 
-def background_task(project_id: str, version: str):
+# =====================
+# Main HTTP Function
+# =====================
+@functions_framework.http
+def process_implicit_requirements(request):
+    '''
+    Starts the implicit requirements extraction process asynchronously.
+    Returns 202 immediately while processing continues in the background.
+    '''
     try:
+        payload = request.get_json(silent=True) or {}
+        # Mock data for local testing
+        # payload = {'project_id': 'EUz0pMnqmNkBfh8FHMYZ', 'version': '1'}
+
+        project_id = payload.get('project_id')
+        version = payload.get('version')
+
+        if not all([project_id, version]):
+            return (
+                json.dumps(
+                    {
+                        'status': 'error',
+                        'message': 'Required details (project_id, version) are missing.',
+                    }
+                ),
+                400,
+            )
+
         _update_firestore_status(project_id, version, 'START_IMPLICIT_REQ_EXTRACT')
 
         exp_reqs = _fetch_explicit_reqs(project_id, version)
 
         if not exp_reqs:
             logger.info('No explicit requirements found. Skipping implicit generation.')
+
             _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
+
             return
 
         _update_firestore_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
@@ -751,63 +876,20 @@ def background_task(project_id: str, version: str):
             f'Background task completed successfully for {project_id}/{version}.'
         )
 
-    except Exception as e:
-        logger.exception('Error during background implicit extraction:')
-
-        _update_firestore_status(project_id, version, 'ERR_IMP_REQ_EXTRACT')
-
-
-# =====================
-# Main HTTP Function
-# =====================
-@functions_framework.http
-def process_implicit_requirements(request):
-    '''
-    Starts the implicit requirements extraction process asynchronously.
-    Returns 202 immediately while processing continues in the background.
-    '''
-    try:
-        payload = request.get_json(silent=True) or {}
-        # Mock data for local testing
-        # payload = {'project_id': 'EUz0pMnqmNkBfh8FHMYZ', 'version': '1'}
-
-        project_id = payload.get('project_id')
-        version = payload.get('version')
-
-        if not all([project_id, version]):
-            return (
-                json.dumps(
-                    {
-                        'status': 'error',
-                        'message': 'Required details (project_id, version) are missing.',
-                    }
-                ),
-                400,
-            )
-
-        # Launch the process in background
-        thread = threading.Thread(
-            target=background_task, args=(project_id, version), daemon=True
-        )
-
-        # For local testing
-        # background_task(project_id, version)
-
-        thread.start()
-
-        # Return immediately
         return (
             json.dumps(
                 {
-                    'status': 'accepted',
-                    'message': f'Implicit requirement extraction started for {project_id}/{version}.',
+                    'status': 'success',
+                    'message': f'Implicit requirement extracted for {project_id}/{version}.',
                 }
             ),
-            202,
+            200,
         )
 
     except Exception as e:
-        logger.exception('Error initiating process:')
+        logger.exception('Error during implicit extraction:')
+
+        _update_firestore_status(project_id, version, 'ERR_IMP_REQ_EXTRACT')
 
         return (
             json.dumps(
