@@ -126,7 +126,9 @@ def _generate_test_cases(requirement_data: Dict[str, Any]) -> List[Dict[str, Any
     return json.loads(resp.text)
 
 
-def check_completed_status(firestore_client: firestore.Client, project_id: str, version: str):
+def check_completed_status(
+    firestore_client: firestore.Client, project_id: str, version: str
+):
     unexcluded_reqs = (
         firestore_client.collection(
             'projects', project_id, 'versions', version, 'requirements'
@@ -147,9 +149,9 @@ def check_completed_status(firestore_client: firestore.Client, project_id: str, 
     ).get()
 
     if len(unexcluded_reqs) == len(completed_reqs):
-        firestore_client.document(
-            'projects', project_id, 'versions', version
-        ).update({'status': 'CONFIRM_TESTCASES'})
+        firestore_client.document('projects', project_id, 'versions', version).update(
+            {'status': 'CONFIRM_TESTCASES'}
+        )
 
 
 # =======================================================
@@ -241,7 +243,7 @@ def generate_test_cases(request):
                         'requirement_id': requirement_id,
                         'created_at': firestore.SERVER_TIMESTAMP,
                         'change_analysis_status': 'NEW',
-                        'toolCreated': False,
+                        'toolCreated': 'NOT_STARTED',
                         'toolIssueKey': '',
                         'toolIssueLink': '',
                         'deleted': False,
@@ -268,7 +270,6 @@ def generate_test_cases(request):
         )
 
         check_completed_status(firestore_client, project_id, version)
-        
 
         return (
             json.dumps(
