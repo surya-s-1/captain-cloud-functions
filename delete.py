@@ -12,7 +12,11 @@ except Exception as e:
     )
     exit()
 
-collection_ref = db.collection(COLLECTION_NAME)
+collection_ref = (
+    db
+    .collection(COLLECTION_NAME)
+    # .where('source_type', '==', 'implicit')
+)
 
 # ----------------------------------------------------------------------
 
@@ -25,7 +29,7 @@ def delete_collection_in_batches(coll_ref, batch_size):
         coll_ref: The Firestore collection reference.
         batch_size: The number of documents to delete in each batch.
     """
-    print(f"Starting deletion from collection: '{coll_ref.id}'...")
+    print(f"Starting deletion from collection...")
 
     total_deleted = 0
 
