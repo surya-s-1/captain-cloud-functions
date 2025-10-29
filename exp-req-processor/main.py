@@ -229,8 +229,12 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
 
     original_length = len(texts)
 
+    print(f'Generating embeddings for {len(texts)} texts...')
+
     try:
         contents = [Content(parts=[Part(text=t)]) for t in texts]
+
+        perf_start = time.time()
 
         with futures.ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(
@@ -247,6 +251,10 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
             response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
 
         batch_embeddings = [e.values for e in response.embeddings]
+
+        perf_end = time.time()
+
+        print('Time taken for this embedding batch (in seconds):', perf_end - perf_start)
 
         return batch_embeddings
 
@@ -462,9 +470,9 @@ def process_explicit_requirements(request):
         payload = request.get_json(silent=True) or {}
         # Using mock payload for local testing
         # payload = {
-        #     'project_id': 'abc',
-        #     'version': 'v1',
-        #     'requirements_p1_url': 'gs://genai-sage/projects/abc/v_v1/extractions/requirements-phase-1.json',
+        #     'project_id': 'EUz0pMnqmNkBfh8FHMYZ',
+        #     'version': '1',
+        #     'requirements_p1_url': 'gs://genai-sage/projects/EUz0pMnqmNkBfh8FHMYZ/v_1/extractions/requirements-phase-1.json',
         # }
 
         project_id = payload.get('project_id')
