@@ -1,9 +1,10 @@
 import os
 import json
 import time
-import datetime
 import logging
+import datetime
 import functools
+import threading
 import concurrent.futures as futures
 from urllib.parse import urlparse
 from typing import Any, Dict, List, Tuple, TypeVar
@@ -640,12 +641,9 @@ def _fetch_explicit_reqs(project_id: str, version: str) -> List[Dict[str, Any]]:
 @functions_framework.http
 def process_implicit_requirements(request):
     '''
-    Fetches original explicit reqs from Firestore, finds,
-    refines, persists, and de-duplicates IMPLICIT requirements.
+    Starts the implicit requirements extraction process asynchronously.
+    Returns 202 immediately while processing continues in the background.
     '''
-    project_id = None
-    version = None
-
     try:
         payload = request.get_json(silent=True) or {}
         project_id = payload.get('project_id')
@@ -662,80 +660,89 @@ def process_implicit_requirements(request):
                 400,
             )
 
-        _update_firestore_status(project_id, version, 'START_IMPLICIT_REQ_EXTRACT')
+        def background_task(project_id: str, version: str):
+            try:
+                _update_firestore_status(
+                    project_id, version, 'START_IMPLICIT_REQ_EXTRACT'
+                )
 
-        exp_reqs = _fetch_explicit_reqs(project_id, version)
+                exp_reqs = _fetch_explicit_reqs(project_id, version)
 
-        if not exp_reqs:
-            print('No explicit requirements found. Skipping implicit generation.')
+                if not exp_reqs:
+                    print(
+                        'No explicit requirements found. Skipping implicit generation.'
+                    )
+                    _update_firestore_status(
+                        project_id, version, 'CONFIRM_IMP_REQ_EXTRACT'
+                    )
+                    return
 
-            _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
+                _update_firestore_status(
+                    project_id, version, 'START_IMPLICIT_DISCOVERY'
+                )
 
-            return (
-                json.dumps(
-                    {
-                        'status': 'success',
-                        'message': 'No explicit requirements to process.',
-                    }
-                ),
-                200,
-            )
+                disc_results = _query_discovery_engine_parallel(exp_reqs)
 
-        _update_firestore_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
+                if not disc_results:
+                    print('No implicit candidates found from Discovery Engine.')
+                    _update_firestore_status(
+                        project_id, version, 'CONFIRM_IMP_REQ_EXTRACT'
+                    )
+                    return
 
-        disc_results = _query_discovery_engine_parallel(exp_reqs)
+                _update_firestore_status(project_id, version, 'START_IMPLICIT_REFINE')
 
-        if not disc_results:
-            print('No implicit candidates found from Discovery Engine.')
+                refined_results = _refine_disc_results(disc_results)
 
-            _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
+                formatted_results = _format_disc_results(version, refined_results)
 
-            return (
-                json.dumps(
-                    {
-                        'status': 'success',
-                        'message': 'No implicit candidates found.',
-                    }
-                ),
-                200,
-            )
+                _update_firestore_status(project_id, version, 'START_STORE_IMPLICIT')
 
-        _update_firestore_status(project_id, version, 'START_IMPLICIT_REFINE')
+                implicit_reqs = _write_reqs_to_firestore(
+                    project_id, version, formatted_results
+                )
 
-        refined_results = _refine_disc_results(disc_results)
+                _update_firestore_status(project_id, version, 'START_DEDUPE_IMPLICIT')
 
-        formatted_results = _format_disc_results(version, refined_results)
+                _mark_duplicates(project_id, version, implicit_reqs)
 
-        _update_firestore_status(project_id, version, 'START_STORE_IMPLICIT')
+                _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
 
-        implicit_reqs = _write_reqs_to_firestore(project_id, version, formatted_results)
+                print(
+                    f'Background task completed successfully for {project_id}/{version}.'
+                )
 
-        _update_firestore_status(project_id, version, 'START_DEDUPE_IMPLICIT')
+            except Exception as e:
+                logging.exception('Error during background implicit extraction:')
 
-        _mark_duplicates(project_id, version, implicit_reqs)
+                _update_firestore_status(project_id, version, 'ERR_IMP_REQ_EXTRACT')
 
-        _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
+        # Launch the process in background
+        thread = threading.Thread(
+            target=background_task, args=(project_id, version), daemon=True
+        )
 
+        thread.start()
+
+        # Return immediately
         return (
             json.dumps(
                 {
-                    'status': 'success',
+                    'status': 'accepted',
+                    'message': f'Implicit requirement extraction started for {project_id}/{version}.',
                 }
             ),
-            200,
+            202,
         )
 
     except Exception as e:
-        logging.exception('Error during requirements extraction (IMPLICIT):')
-
-        if project_id and version:
-            _update_firestore_status(project_id, version, 'ERR_IMP_REQ_EXTRACT')
+        logging.exception('Error initiating process:')
 
         return (
             json.dumps(
                 {
                     'status': 'error',
-                    'message': f'An unexpected error occurred during processing: {str(e)}',
+                    'message': f'Failed to start process: {str(e)}',
                 }
             ),
             500,
