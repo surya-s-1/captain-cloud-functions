@@ -28,6 +28,8 @@ DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
 EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
 MAX_PARALLEL_EMBEDDING_BATCHES = int(os.getenv('MAX_PARALLEL_EMBEDDING_BATCHES'))
+GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
+
 
 # =====================
 # Constants
@@ -38,7 +40,6 @@ MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 
 GENAI_API_VERSION = 'v1'
-GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
 
 # =====================
 # Clients
