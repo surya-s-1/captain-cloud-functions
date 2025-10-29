@@ -7,6 +7,7 @@ from google.genai.types import Content, Part
 
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 MODEL_NAME = os.getenv('MODEL_NAME')
+ENHANCEMENT_PROMPT = os.getenv('ENHANCEMENT_PROMPT')
 
 firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
 genai_client = genai.Client()
@@ -58,13 +59,7 @@ def update_testcase(request):
         )
 
         # Prefix the prompt with role instruction
-        role_prompt = (
-            'You are an expert QA tester specializing in medical software systems. '
-            'Based on the following input, update the testcase details (title, description, acceptance_criteria, priority).'
-            'Make sure to update only what the user asked you to. Kepp the remaining things exactly same.'
-            'Keep description and acceptance criteria always in the markdown format and try to use bullet points when required.\n\n'
-            f'{prompt}'
-        )
+        role_prompt = f'{ENHANCEMENT_PROMPT}\n\n{prompt}'
 
         # Generate structured output from Gemini
         response = genai_client.models.generate_content(
