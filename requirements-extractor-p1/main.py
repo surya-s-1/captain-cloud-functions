@@ -16,12 +16,16 @@ GOOGLE_CLOUD_PROJECT = os.environ.get('GOOGLE_CLOUD_PROJECT')
 OUTPUT_BUCKET = os.getenv('OUTPUT_BUCKET')
 FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 MAX_INPUT_CHARS_FOR_CONTEXT = int(os.getenv('MAX_INPUT_CHARS_FOR_CONTEXT', '600000'))
+CONTEXT_PROMPT = os.getenv('CONTEXT_PROMPT')
+EXTRACTION_PROMPT = os.getenv('EXTRACTION_PROMPT')
+
 
 # --- Clients ---
 storage_client = storage.Client()
 firestore_client = firestore.Client(database=FIRESTORE_DATABASE)
 genai_client = genai.Client(http_options=HttpOptions(api_version='v1'))
 logging.basicConfig(level=logging.INFO)
+
 
 # --- Config ---
 MAX_WORKERS = 8
@@ -34,6 +38,7 @@ REQUIREMENT_TYPES = [
     'security',
     'usability',
 ]
+
 
 # --- Schemas ---
 REQUIREMENT_SCHEMA = {
@@ -118,13 +123,7 @@ def _call_genai_for_context(extracted_text_data: List[Dict[str, Any]]) -> str:
 
     # Use a concise set of instructions for the prompt
     context_prompt = f'''
-    You are a software requirements analyst for medical software/devices. Analyze the entire provided set of text snippets.
-    Your sole task is to synthesize a single, concise, and clear **System Context Header** (less than 250 characters) that summarizes the software's:
-    1. Intended Use or Primary Function.
-    2. Target Users (e.g., 'Clinicians', 'Patients', 'Administrators').
-    3. Criticality/Regulatory Keywords (e.g., 'real-time alerts', 'patient data', 'audit', 'security').
-    
-    DO NOT RETURN ANY REQUIREMENTS, just the summary. Format the summary as a single block of text.
+    {CONTEXT_PROMPT}
 
     Full Text Snippets for Analysis:
     ---
@@ -164,22 +163,7 @@ def _call_genai_for_snippet(
     prompt = f'''
     SYSTEM CONTEXT: {system_context}
 
-    You are a software requirements analyst for medical software/devices. Analyze the single, provided text snippet below.
-    
-    **DO NOT DERIVE ANY REQUIREMENTS FROM THE 'SYSTEM CONTEXT' ABOVE.**
-    **Only derive requirements from the 'Input Text Snippet' below.**
-
-    Your sole task is to take the text, break it into multiple requirements if multiple exist, 
-    and categorize each one. If not possible to split, return the original provided text.
-
-    Make sure the rewritten requirement is size is LESS THAN 300 CHARACTERS.
-    The rewritten requirement must be clear, concise, verifiable, and written in
-    the third person (e.g., \'The system shall...\' or \'The device must...\'). 
-    Remove all conversational language, first/second/third-person comments, 
-    introductions, conclusions, or narrative elements. Focus only on the core action or constraint.
-
-    IF NEEDED, generate usability/ user interface/ human factors/ accessibility/ any risk factors based requirements
-    for the text snippet provided. IF NOT NEEDED for the provided text, DO NOT GENERATE ANY.
+    {EXTRACTION_PROMPT}
 
     Categorize each requirement into: {', '.join(REQUIREMENT_TYPES)}.
     If none fit, default to 'functional'.
