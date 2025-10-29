@@ -58,6 +58,18 @@ REFINEMENT_PROMPT = (
     f'{REFINEMENT_PROMPT_ENV}' 'Here is the text you need to refine:\n\n{payload}'
 )
 
+# =====================
+# Logging
+# =====================
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
 
 # =====================
 # Clients
@@ -72,8 +84,6 @@ serving_config = (
 
 # Configure GenAI client once (used for embeddings and generation)
 genai_client = genai.Client(http_options=HttpOptions(api_version=GENAI_API_VERSION))
-logging.getLogger('google.cloud').setLevel(logging.WARNING)
-logging.getLogger('google.genai').setLevel(logging.WARNING)
 
 # =====================
 # Small utilities
@@ -94,7 +104,7 @@ def _retry(max_attempts: int = 3, base_delay: float = 0.5):
                 try:
                     return fn(*args, **kwargs)
                 except Exception as e:
-                    logging.exception(
+                    logger.exception(
                         f'Attempt {attempt}/{max_attempts} failed for {fn.__name__} with error: {e}'
                     )
                     if attempt == max_attempts:
@@ -126,7 +136,7 @@ def _update_firestore_status(project_id: str, version: str, status: str) -> None
     '''Updates the status of a project version in Firestore.'''
     doc_ref = firestore_client.document('projects', project_id, 'versions', version)
     doc_ref.set({'status': status}, merge=True)
-    print(f'Status => {status}')
+    logger.info(f'Status => {status}')
 
 
 def _firestore_json_converter(obj: Any) -> str:
@@ -153,7 +163,7 @@ def _get_document_size_approx(data: Dict[str, Any]) -> int:
         data_json = json.dumps(data, default=_firestore_json_converter)
         return len(data_json.encode('utf-8'))
     except Exception as e:
-        logging.warning(f'Failed to serialize document data for size check. Error: {e}')
+        logger.warning(f'Failed to serialize document data for size check. Error: {e}')
         return -1
 
 
@@ -165,18 +175,21 @@ def _firestore_commit_many(
     batch_count = 0
     skipped_count = 0
 
-    logging.info(f'Starting commit for {len(doc_tuples)} total documents...')
+    logger.info(f'Starting commit for {len(doc_tuples)} total documents...')
+    logger.info(
+        f'Approximate number of batches => {len(doc_tuples)//FIRESTORE_COMMIT_CHUNK + 1}'
+    )
 
     for doc_ref, data in doc_tuples:
         data_size_bytes = _get_document_size_approx(data)
 
         if data_size_bytes == -1:
-            logging.error(f'SKIPPING: {doc_ref.path} due to error during size check.')
+            logger.info(f'SKIPPING: {doc_ref.path} due to error during size check.')
             skipped_count += 1
             continue
 
         if data_size_bytes > MAX_DOC_SIZE_BYTES:
-            logging.warning(
+            logger.info(
                 f'SKIPPING: {doc_ref.path}. '
                 f'Approximate size ({data_size_bytes / 1024:.2f} KiB) exceeds the '
                 f'conservative limit ({MAX_DOC_SIZE_BYTES / 1024:.2f} KiB).'
@@ -188,16 +201,16 @@ def _firestore_commit_many(
         batch_count += 1
 
         if batch_count >= FIRESTORE_COMMIT_CHUNK:
-            logging.info(f'Firestore => committing {batch_count} documents...')
+            logger.info(f'Firestore => committing {batch_count} documents...')
             batch.commit()
             batch = firestore_client.batch()
             batch_count = 0
 
     if batch_count:
-        logging.info(f'Firestore => committing final {batch_count} documents...')
+        logger.info(f'Firestore => committing final {batch_count} documents...')
         batch.commit()
 
-    logging.warning(
+    logger.info(
         f'Commit finished. Total documents skipped due to size/error: {skipped_count}'
     )
 
@@ -245,6 +258,8 @@ def _refine_requirement_with_gemini(text: str) -> List[str]:
         return ''
 
     try:
+        perf_start = time.time()
+
         response = _genai_json_call(
             model=GENAI_MODEL,
             prompt=REFINEMENT_PROMPT.format(payload=text),
@@ -260,10 +275,16 @@ def _refine_requirement_with_gemini(text: str) -> List[str]:
             },
         )
 
+        perf_end = time.time()
+
+        logger.info(
+            f'Time taken for this refinement (in seconds): {perf_end - perf_start}'
+        )
+
         return [resp.get('text', '') for resp in response]
 
     except Exception as e:
-        logging.error(
+        logger.exception(
             f'Gemini refinement failed for text: \'{text[:50]}...\'. Error: {e}'
         )
 
@@ -272,15 +293,25 @@ def _refine_requirement_with_gemini(text: str) -> List[str]:
 
 def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
-    print(f'Starting parallel refinement of {len(results)} candidates with Gemini...')
+    logger.info(
+        f'Starting parallel refinement of {len(results)} candidates with Gemini...'
+    )
 
     texts_to_refine = [res.get('snippet', '') for res in results]
+
+    perf_start = time.time()
 
     with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         # Note: _refine_requirement_with_gemini returns a list
         refined_text_responses = list(
             ex.map(_refine_requirement_with_gemini, texts_to_refine)
         )
+
+    perf_end = time.time()
+
+    logger.info(
+        f'Total time taken for refinement (in seconds): {perf_end - perf_start}'
+    )
 
     refined_candidates = []
 
@@ -290,7 +321,7 @@ def _refine_disc_results(results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             new_candidate['refined_text'] = refined_text
             refined_candidates.append(new_candidate)
 
-    print('Refinement complete. Final candidates =>', len(refined_candidates))
+    logger.info(f'Refinement complete. Final candidates => {len(refined_candidates)}')
 
     return refined_candidates
 
@@ -303,8 +334,12 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
 
     original_length = len(texts)
 
+    logger.info(f'Generating embeddings for {len(texts)} texts...')
+
     try:
         contents = [Content(parts=[Part(text=t)]) for t in texts]
+
+        perf_start = time.time()
 
         with futures.ThreadPoolExecutor(max_workers=1) as ex:
             future = ex.submit(
@@ -322,10 +357,16 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
 
         batch_embeddings = [e.values for e in response.embeddings]
 
+        perf_end = time.time()
+
+        logger.info(
+            f'Time taken for this embedding batch (in seconds): {perf_end - perf_start}'
+        )
+
         return batch_embeddings
 
     except Exception as e:
-        logging.exception(
+        logger.exception(
             f'Batch embedding generation failed for {len(texts)} texts. Error: {e}'
         )
         return [[]] * original_length
@@ -384,7 +425,7 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
 
     processed.sort(key=lambda x: x['relevance_score'], reverse=True)
 
-    print(f'Discovery processed => {len(processed)}')
+    logger.info(f'Discovery processed => {len(processed)}')
 
     return [
         el for el in processed if el['relevance_score'] > DISCOVERY_RELEVANCE_THRESHOLD
@@ -401,7 +442,7 @@ def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str
         f'Find the regulations, standards and procedures that apply to the following requirement: {req_text}'
     )
 
-    print(f'{req_id} => Discovery results => {len(discovery_results)}')
+    logger.info(f'{req_id} => Discovery results => {len(discovery_results)}')
 
     for res in discovery_results:
         res['explicit_requirement_id'] = req_id
@@ -423,7 +464,7 @@ def _query_discovery_engine_parallel(
         for res_list in ex.map(_query_discovery_engine_wrapper, req_inputs):
             all_results.extend(res_list)
 
-    print(f'Discovery implicit candidates => {len(all_results)}')
+    logger.info(f'Discovery implicit candidates => {len(all_results)}')
 
     return all_results
 
@@ -478,7 +519,7 @@ def _write_reqs_to_firestore(
     project_id: str, version: str, requirements: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
 
-    print(
+    logger.info(
         f'Generating embeddings for {len(requirements)} requirements using batching...'
     )
 
@@ -490,10 +531,16 @@ def _write_reqs_to_firestore(
 
     text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
 
+    perf_start = time.time()
+
     with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
         batch_results = list(ex.map(_generate_embedding_batch, text_batches))
         for batch in batch_results:
             embedding_vectors.extend(batch)
+
+    perf_end = time.time()
+
+    logger.info(f'Total time taken for embedding (in seconds): {perf_end - perf_start}')
 
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
@@ -543,6 +590,8 @@ def _mark_duplicates(
     # Stores (duplicate_id, near_duplicate_id, duplicate_source_ids_to_merge)
     duplicates_to_update: List[Tuple[str, str, List[str]]] = []
 
+    perf_start = time.time()
+
     # Iterate through each requirement (i)
     for i in range(len(requirements)):
         req_i = requirements[i]
@@ -573,11 +622,15 @@ def _mark_duplicates(
                 req_i['duplicate'] = True
                 break
 
+    perf_end = time.time()
+
+    logger.info(f'Time to find duplicates (in seconds): {perf_end - perf_start}')
+
     if not duplicates_to_update:
-        print('No duplicates found using vector embeddings in this batch.')
+        logger.info('No duplicates found using vector embeddings in this batch.')
         return [], requirements
 
-    print(f'Found {len(duplicates_to_update)} duplicates to mark.')
+    logger.info(f'Found {len(duplicates_to_update)} duplicates to mark.')
 
     batch = firestore_client.batch()
 
@@ -606,6 +659,12 @@ def _mark_duplicates(
 
     batch.commit()
 
+    perf_end = time.time()
+
+    logger.info(
+        f'Time to find and update duplicates (in seconds): {perf_end - perf_start}'
+    )
+
     all_duplicates: List[Dict[str, Any]] = []
     all_originals: List[Dict[str, Any]] = []
 
@@ -615,7 +674,7 @@ def _mark_duplicates(
         else:
             all_originals.append(req)
 
-    print(f'Dedupe => Marked {len(all_duplicates)} explicit duplicates.')
+    logger.info(f'Dedupe => Marked {len(all_duplicates)} explicit duplicates.')
 
     return all_duplicates, all_originals
 
@@ -625,7 +684,9 @@ def _fetch_explicit_reqs(project_id: str, version: str) -> List[Dict[str, Any]]:
     Fetches all non-duplicate, non-deleted, explicit requirements
     from Firestore to be used as a source for implicit requirement generation.
     '''
-    print(f'Fetching original explicit requirements for {project_id}/{version}...')
+    logger.info(
+        f'Fetching original explicit requirements for {project_id}/{version}...'
+    )
 
     reqs_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
@@ -642,9 +703,55 @@ def _fetch_explicit_reqs(project_id: str, version: str) -> List[Dict[str, Any]]:
 
     req_list = [doc.to_dict() for doc in documents]
 
-    print(f'Found {len(req_list)} original explicit requirements to process.')
+    logger.info(f'Found {len(req_list)} original explicit requirements to process.')
 
     return req_list
+
+
+def background_task(project_id: str, version: str):
+    try:
+        _update_firestore_status(project_id, version, 'START_IMPLICIT_REQ_EXTRACT')
+
+        exp_reqs = _fetch_explicit_reqs(project_id, version)
+
+        if not exp_reqs:
+            logger.info('No explicit requirements found. Skipping implicit generation.')
+            _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
+            return
+
+        _update_firestore_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
+
+        disc_results = _query_discovery_engine_parallel(exp_reqs)
+
+        if not disc_results:
+            logger.info('No implicit candidates found from Discovery Engine.')
+            _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
+            return
+
+        _update_firestore_status(project_id, version, 'START_IMPLICIT_REFINE')
+
+        refined_results = _refine_disc_results(disc_results)
+
+        formatted_results = _format_disc_results(version, refined_results)
+
+        _update_firestore_status(project_id, version, 'START_STORE_IMPLICIT')
+
+        implicit_reqs = _write_reqs_to_firestore(project_id, version, formatted_results)
+
+        _update_firestore_status(project_id, version, 'START_DEDUPE_IMPLICIT')
+
+        _mark_duplicates(project_id, version, implicit_reqs)
+
+        _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
+
+        logger.info(
+            f'Background task completed successfully for {project_id}/{version}.'
+        )
+
+    except Exception as e:
+        logger.exception('Error during background implicit extraction:')
+
+        _update_firestore_status(project_id, version, 'ERR_IMP_REQ_EXTRACT')
 
 
 # =====================
@@ -658,6 +765,9 @@ def process_implicit_requirements(request):
     '''
     try:
         payload = request.get_json(silent=True) or {}
+        # Mock data for local testing
+        # payload = {'project_id': 'EUz0pMnqmNkBfh8FHMYZ', 'version': '1'}
+
         project_id = payload.get('project_id')
         version = payload.get('version')
 
@@ -672,67 +782,13 @@ def process_implicit_requirements(request):
                 400,
             )
 
-        def background_task(project_id: str, version: str):
-            try:
-                _update_firestore_status(
-                    project_id, version, 'START_IMPLICIT_REQ_EXTRACT'
-                )
-
-                exp_reqs = _fetch_explicit_reqs(project_id, version)
-
-                if not exp_reqs:
-                    print(
-                        'No explicit requirements found. Skipping implicit generation.'
-                    )
-                    _update_firestore_status(
-                        project_id, version, 'CONFIRM_IMP_REQ_EXTRACT'
-                    )
-                    return
-
-                _update_firestore_status(
-                    project_id, version, 'START_IMPLICIT_DISCOVERY'
-                )
-
-                disc_results = _query_discovery_engine_parallel(exp_reqs)
-
-                if not disc_results:
-                    print('No implicit candidates found from Discovery Engine.')
-                    _update_firestore_status(
-                        project_id, version, 'CONFIRM_IMP_REQ_EXTRACT'
-                    )
-                    return
-
-                _update_firestore_status(project_id, version, 'START_IMPLICIT_REFINE')
-
-                refined_results = _refine_disc_results(disc_results)
-
-                formatted_results = _format_disc_results(version, refined_results)
-
-                _update_firestore_status(project_id, version, 'START_STORE_IMPLICIT')
-
-                implicit_reqs = _write_reqs_to_firestore(
-                    project_id, version, formatted_results
-                )
-
-                _update_firestore_status(project_id, version, 'START_DEDUPE_IMPLICIT')
-
-                _mark_duplicates(project_id, version, implicit_reqs)
-
-                _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
-
-                print(
-                    f'Background task completed successfully for {project_id}/{version}.'
-                )
-
-            except Exception as e:
-                logging.exception('Error during background implicit extraction:')
-
-                _update_firestore_status(project_id, version, 'ERR_IMP_REQ_EXTRACT')
-
         # Launch the process in background
         thread = threading.Thread(
             target=background_task, args=(project_id, version), daemon=True
         )
+
+        # For local testing
+        # background_task(project_id, version)
 
         thread.start()
 
@@ -748,7 +804,7 @@ def process_implicit_requirements(request):
         )
 
     except Exception as e:
-        logging.exception('Error initiating process:')
+        logger.exception('Error initiating process:')
 
         return (
             json.dumps(
