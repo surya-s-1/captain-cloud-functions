@@ -1,7 +1,7 @@
 from google.cloud import firestore
 
-COLLECTION_NAME = "projects/7J4TD03eXpwnuoPxkB5M/versions/1/requirements"
-BATCH_SIZE = 25
+COLLECTION_NAME = "projects/EUz0pMnqmNkBfh8FHMYZ/versions/1/requirements"
+BATCH_SIZE = 50
 
 try:
     db = firestore.Client(database='sage')
