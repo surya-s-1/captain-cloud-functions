@@ -30,28 +30,24 @@ EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 DISCOVERY_RELEVANCE_THRESHOLD = float(os.getenv('DISCOVERY_RELEVANCE_THRESHOLD'))
 FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
+EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
+MAX_PARALLEL_EMBEDDING_BATCHES = int(os.getenv('MAX_PARALLEL_EMBEDDING_BATCHES'))
 GENAI_MODEL = os.getenv('GENAI_MODEL')
 GENAI_API_VERSION = os.getenv('GENAI_API_VERSION')
 GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
+REFINEMENT_PROMPT_ENV = os.getenv('REFINEMENT_PROMPT')
+
+# =====================
+# Constants
+# =====================
 
 REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
-EMBEDDING_BATCH_SIZE = 150
-MAX_PARALLEL_EMBEDDING_BATCHES = 7
 
 # System prompt for Gemini requirement refinement
 REFINEMENT_PROMPT = (
-    'You are a Medical Quality Assurance Document Specialist. Your task is to take raw text, '
-    'which is often a snippet from a regulatory document or an informal comment, and '
-    'rewrite it into a single, objective, formal software or system requirement. '
-    'Break into multiple requirements (maximum 2) if needed.'
-    'Make sure the rewritten requirement is size is less than 300 characters.'
-    'The rewritten requirement must be clear, concise, verifiable, and written in '
-    'the third person (e.g., \'The system shall...\' or \'The device must...\'). '
-    'Remove all conversational language, first/second/third-person comments, '
-    'introductions, conclusions, or narrative elements. Focus only on the core action or constraint.'
-    'Here is the text you need to refine:\n\n{payload}'
+    f'{REFINEMENT_PROMPT_ENV}' 'Here is the text you need to refine:\n\n{payload}'
 )
 
 

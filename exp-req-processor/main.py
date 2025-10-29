@@ -26,12 +26,16 @@ FIRESTORE_DATABASE = os.getenv('FIRESTORE_DATABASE')
 EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
+EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
+MAX_PARALLEL_EMBEDDING_BATCHES = int(os.getenv('MAX_PARALLEL_EMBEDDING_BATCHES'))
+
+# =====================
+# Constants
+# =====================
 
 # Tunables (safe defaults for speed and cost-efficiency)
 MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
-EMBEDDING_BATCH_SIZE = 150
-MAX_PARALLEL_EMBEDDING_BATCHES = 7
 
 GENAI_API_VERSION = 'v1'
 GENAI_TIMEOUT_SECONDS = 90  # Each LLM call safety timeout
