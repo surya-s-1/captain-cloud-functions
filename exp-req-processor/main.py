@@ -14,6 +14,7 @@ import functions_framework
 # load_dotenv()
 
 from google import genai
+from google.genai.types import EmbedContentConfig
 from google.genai.types import HttpOptions, Part, Content
 from google.cloud import storage, firestore
 from google.cloud.firestore_v1.transforms import Sentinel
@@ -27,6 +28,7 @@ EMBEDDING_MODEL = os.getenv('EMBEDDING_MODEL')
 DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
 EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
+EMBEDDING_OUTPUT_DIMENTION = int(os.getenv('EMBEDDING_OUTPUT_DIMENTION'))
 MAX_PARALLEL_EMBEDDING_BATCHES = int(os.getenv('MAX_PARALLEL_EMBEDDING_BATCHES'))
 GENAI_TIMEOUT_SECONDS = int(os.getenv('GENAI_TIMEOUT_SECONDS'))
 
@@ -235,6 +237,11 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
                 lambda: genai_client.models.embed_content(
                     model=EMBEDDING_MODEL,
                     contents=contents,
+                    config=EmbedContentConfig(
+                        auto_truncate=True,
+                        output_dimensionality=EMBEDDING_OUTPUT_DIMENTION,
+                        task_type='SEMANTIC_SIMILARITY',
+                    ),
                 )
             )
             response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
