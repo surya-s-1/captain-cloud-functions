@@ -513,6 +513,9 @@ def _format_disc_results(
                 ],
                 'parent_exp_req_ids': [parent_req] if parent_req else [],
                 'testcase_status': 'NOT_STARTED',
+                'toolCreated': 'NOT_STARTED',
+                'toolIssueKey': '',
+                'toolIssueLink': '',
                 'updated_at': firestore.SERVER_TIMESTAMP,
                 'created_at': firestore.SERVER_TIMESTAMP,
             }

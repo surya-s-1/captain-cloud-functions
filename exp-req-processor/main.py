@@ -314,6 +314,9 @@ def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, An
                 'regulations': [],
                 'parent_exp_req_ids': [],
                 'testcase_status': 'NOT_STARTED',
+                'toolCreated': 'NOT_STARTED',
+                'toolIssueKey': '',
+                'toolIssueLink': '',
                 'updated_at': firestore.SERVER_TIMESTAMP,
                 'created_at': firestore.SERVER_TIMESTAMP,
             }
