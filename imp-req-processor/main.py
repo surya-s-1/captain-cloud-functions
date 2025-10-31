@@ -580,6 +580,7 @@ def _write_reqs_to_firestore(
                 'duplicate': doc_data['duplicate'],
                 'parent_exp_req_ids': doc_data['parent_exp_req_ids'],
                 'source_type': doc_data['source_type'],
+                'regulations': doc_data['regulations'],
             }
         )
 
@@ -866,9 +867,7 @@ def process_implicit_requirements(request):
 
         if not exp_reqs:
             logger.info('No explicit requirements found. Skipping implicit generation.')
-
             _update_firestore_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
-
             return
 
         _update_firestore_status(project_id, version, 'START_IMPLICIT_DISCOVERY')

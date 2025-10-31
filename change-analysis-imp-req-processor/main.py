@@ -543,6 +543,7 @@ def _write_reqs_to_firestore(
                     'change_analysis_status': req.get(
                         'change_analysis_status', CHANGE_STATUS_NEW
                     ),
+                    'regulations': req.get('regulations', []),
                 }
             )
 

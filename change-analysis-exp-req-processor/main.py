@@ -605,6 +605,7 @@ def _mark_unchanged_modified_new_in_firestore(
                     'change_analysis_near_duplicate_id', ''
                 ),
                 'change_analysis_status': req_change_status,
+                'sources': req.get('sources', []),
             }
         )
 

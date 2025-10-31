@@ -372,6 +372,7 @@ def _write_reqs_to_firestore(
                 'embedding': doc_data['embedding'],
                 'duplicate': doc_data['duplicate'],
                 'source_type': doc_data['source_type'],
+                'sources': doc_data['sources'],
             }
         )
 
