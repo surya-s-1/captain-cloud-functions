@@ -77,7 +77,7 @@ def copy_subcollection_with_history(
             copy_count += 1
             batch_size += 1
 
-            if batch_size >= 499:
+            if batch_size >= 50:
                 print(f"Committing batch of {batch_size} documents...")
                 batch.commit()
                 batch = db.batch()  # Start a new batch
