@@ -330,12 +330,11 @@ def _load_and_normalize_exp_req(version: str, obj_url: str) -> List[Dict[str, An
 def _write_reqs_to_firestore(
     project_id: str, version: str, requirements: List[Dict[str, Any]]
 ) -> List[Dict[str, Any]]:
-
     logger.info(f'Generating embeddings for {len(requirements)} requirements...')
 
-    texts_to_embed = [req.get('requirement', '') for req in requirements]
     embedding_vectors = []
 
+    texts_to_embed = [req.get('requirement', '') for req in requirements]
     text_batches = _chunk_list(texts_to_embed, EMBEDDING_BATCH_SIZE)
 
     with futures.ThreadPoolExecutor(max_workers=MAX_PARALLEL_EMBEDDING_BATCHES) as ex:
@@ -530,8 +529,13 @@ def _mark_duplicates(
     logger.info(f'Found {len(duplicates_to_update)} duplicates to mark.')
 
     batch = firestore_client.batch()
+    batch_count = 0
 
     for req_id, near_duplicate_id, parent_exp_req_ids in duplicates_to_update:
+        if batch_count >= FIRESTORE_COMMIT_CHUNK:
+            batch.commit()
+            batch_count = 0
+
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
@@ -539,6 +543,7 @@ def _mark_duplicates(
         batch.update(
             doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id}
         )
+        batch_count += 1
 
         if parent_exp_req_ids:
             original_ref = firestore_client.document(
@@ -554,8 +559,10 @@ def _mark_duplicates(
                 original_ref,
                 {'parent_exp_req_ids': firestore.ArrayUnion(parent_exp_req_ids)},
             )
+            batch_count += 1
 
-    batch.commit()
+    if batch_count > 0:
+        batch.commit()
 
     perf_end = time.time()
 
@@ -627,10 +634,7 @@ def process_explicit_requirements(request):
 
         _update_firestore_status(project_id, version, 'CONFIRM_EXP_REQ_EXTRACT')
 
-        return (
-            json.dumps({'status': 'success'}),
-            200,
-        )
+        return json.dumps({'status': 'success'}), 200
 
     except Exception as e:
         logger.exception('Error during requirements extraction phase 2a (EXPLICIT):')

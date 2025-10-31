@@ -735,8 +735,13 @@ def _mark_duplicates(
     logger.info(f'Found {len(duplicates_to_update)} duplicates to mark.')
 
     batch = firestore_client.batch()
+    batch_count = 0
 
     for req_id, near_duplicate_id, parent_exp_req_ids in duplicates_to_update:
+        if batch_count >= FIRESTORE_COMMIT_CHUNK:
+            batch.commit()
+            batch_count = 0
+
         doc_ref = firestore_client.document(
             'projects', project_id, 'versions', version, 'requirements', req_id
         )
@@ -744,6 +749,7 @@ def _mark_duplicates(
         batch.update(
             doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id}
         )
+        batch_count += 1
 
         if parent_exp_req_ids:
             original_ref = firestore_client.document(
@@ -759,8 +765,10 @@ def _mark_duplicates(
                 original_ref,
                 {'parent_exp_req_ids': firestore.ArrayUnion(parent_exp_req_ids)},
             )
+            batch_count += 1
 
-    batch.commit()
+    if batch_count > 0:
+        batch.commit()
 
     perf_end = time.time()
 
