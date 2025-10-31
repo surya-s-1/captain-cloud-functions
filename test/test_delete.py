@@ -1,6 +1,6 @@
 from google.cloud import firestore
 
-COLLECTION_NAME = "projects/EUz0pMnqmNkBfh8FHMYZ/versions/1/requirements"
+COLLECTION_NAME = "projects/EUz0pMnqmNkBfh8FHMYZ/versions/2/requirements"
 BATCH_SIZE = 50
 
 try:
