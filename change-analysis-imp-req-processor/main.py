@@ -942,71 +942,51 @@ def process_implicit_requirements(request):
                 400,
             )
 
-        def background_task(project_id: str, version: str):
-            try:
-                _update_version_status(project_id, version, 'START_IMPLICIT_ANALYSIS')
+        _update_version_status(project_id, version, 'START_IMPLICIT_ANALYSIS')
 
-                # Update status of existing implicit requirements based on explicit links
-                update_existing_implicit_reqs(project_id, version)
+        # Update status of existing implicit requirements based on explicit links
+        update_existing_implicit_reqs(project_id, version)
 
-                _update_version_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
+        _update_version_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
 
-                logger.info(
-                    'Starting implicit search for NEW/MODIFIED explicit requirements...'
-                )
-
-                # Query Firestore for explicit reqs with NEW or MODIFIED status
-                search_reqs_query = (
-                    firestore_client.collection(
-                        'projects', project_id, 'versions', version, 'requirements'
-                    )
-                    .where('source_type', '==', 'explicit')
-                    .where('deleted', '==', False)
-                    .where(
-                        'change_analysis_status',
-                        'in',
-                        [CHANGE_STATUS_NEW, CHANGE_STATUS_MODIFIED],
-                    )
-                    .select(['requirement_id', 'requirement'])
-                )
-
-                search_reqs = [doc.to_dict() for doc in search_reqs_query.stream()]
-
-                disc_results = _query_discovery_engine_parallel(search_reqs)
-
-                _update_version_status(project_id, version, 'START_IMPLICIT_REFINE')
-
-                refined_results = _refine_disc_results(disc_results)
-
-                implicit_reqs = _format_disc_results(version, refined_results)
-
-                _update_version_status(project_id, version, 'START_STORE_IMPLICIT')
-
-                written_imp_reqs = _write_reqs_to_firestore(
-                    project_id, version, implicit_reqs
-                )
-
-                _update_version_status(project_id, version, 'START_DEDUPE_IMPLICIT')
-
-                _mark_duplicates(project_id, version, written_imp_reqs)
-
-                _update_version_status(
-                    project_id, version, 'CONFIRM_CHANGE_ANALYSIS_IMPLICIT'
-                )
-
-            except Exception as e:
-                logger.exception('Error during background implicit extraction:')
-
-                _update_version_status(
-                    project_id, version, 'ERR_CHANGE_ANALYSIS_IMPLICIT'
-                )
-
-        # Launch the process in background
-        thread = threading.Thread(
-            target=background_task, args=(project_id, version), daemon=True
+        logger.info(
+            'Starting implicit search for NEW/MODIFIED explicit requirements...'
         )
 
-        thread.start()
+        # Query Firestore for explicit reqs with NEW or MODIFIED status
+        search_reqs_query = (
+            firestore_client.collection(
+                'projects', project_id, 'versions', version, 'requirements'
+            )
+            .where('source_type', '==', 'explicit')
+            .where('deleted', '==', False)
+            .where(
+                'change_analysis_status',
+                'in',
+                [CHANGE_STATUS_NEW, CHANGE_STATUS_MODIFIED],
+            )
+            .select(['requirement_id', 'requirement'])
+        )
+
+        search_reqs = [doc.to_dict() for doc in search_reqs_query.stream()]
+
+        disc_results = _query_discovery_engine_parallel(search_reqs)
+
+        _update_version_status(project_id, version, 'START_IMPLICIT_REFINE')
+
+        refined_results = _refine_disc_results(disc_results)
+
+        implicit_reqs = _format_disc_results(version, refined_results)
+
+        _update_version_status(project_id, version, 'START_STORE_IMPLICIT')
+
+        written_imp_reqs = _write_reqs_to_firestore(project_id, version, implicit_reqs)
+
+        _update_version_status(project_id, version, 'START_DEDUPE_IMPLICIT')
+
+        _mark_duplicates(project_id, version, written_imp_reqs)
+
+        _update_version_status(project_id, version, 'CONFIRM_IMP_REQ_EXTRACT')
 
         # Return immediately
         return (
