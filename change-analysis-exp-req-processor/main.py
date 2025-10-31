@@ -429,31 +429,84 @@ def _load_existing_exp_requirements(
 def _mark_new_reqs_change_status(
     new_exp_reqs: List[Dict[str, Any]], existing_exp_reqs: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    '''Compares new explicit requirements against existing ones to mark status (UNCHANGED/MODIFIED/NEW).'''
+    '''
+    Compares new explicit requirements against existing ones to mark status
+    (UNCHANGED/MODIFIED/NEW) using a Faiss index for efficient search.
+    '''
 
     logger.info(f'Starting change detection for {len(new_exp_reqs)} new texts...')
 
+    # 1. Filter and Prepare Existing Requirements (Index Data)
+    # Only use existing explicit requirements to build the index
+    existing_exp_for_index = [
+        req
+        for req in existing_exp_reqs
+        if req.get('source_type') == SOURCE_TYPE_EXPLICIT
+    ]
+
+    if not existing_exp_for_index:
+        # If no existing explicit requirements, all new requirements are NEW
+        for new_req in new_exp_reqs:
+            new_req['change_analysis_status'] = CHANGE_STATUS_NEW
+            new_req['change_analysis_status_reason'] = (
+                'No existing requirements to compare against.'
+            )
+            new_req['change_analysis_near_duplicate_id'] = None
+            new_req['testcase_status'] = 'NOT_STARTED'
+        return new_exp_reqs, []
+
+    # Extract embeddings and map index back to original requirement_id
+    existing_embeddings = np.array(
+        [req['embedding'] for req in existing_exp_for_index], dtype='float32'
+    )
+    existing_req_ids = [req['requirement_id'] for req in existing_exp_for_index]
+
+    dimension = existing_embeddings.shape[1]
+
+    # L2-normalize the embeddings (essential for using L2 distance as cosine similarity)
+    faiss.normalize_L2(existing_embeddings)
+
+    # 2. Build Faiss Index on Existing Requirements
+    # Use IndexFlatL2 for exact search, as in _mark_duplicates
+    index = faiss.IndexFlatL2(dimension)
+    index.add(existing_embeddings)
+
+    # 3. Prepare New Requirements (Query Data)
+    if not new_exp_reqs:
+        return [], existing_exp_for_index
+
+    new_embeddings = np.array(
+        [req['embedding'] for req in new_exp_reqs], dtype='float32'
+    )
+    faiss.normalize_L2(new_embeddings)
+
+    # 4. Perform Nearest Neighbors Search (New-vs-Existing)
+    # k=1 because we only want the single best match from the *existing* set.
+    k = 1
+    # D is Distances (Squared L2), I is Indices (into existing_exp_for_index)
+    D, I = index.search(new_embeddings, k)
+
     old_ids_checked = set()
 
-    for new_req in new_exp_reqs:
-        best_match = None
-        max_sim_score = -1.0
+    # 5. Process Results
+    for i, new_req in enumerate(new_exp_reqs):
+        best_match_index = I[i, 0]  # Index in existing_exp_for_index
+        sq_dist = D[i, 0]  # Squared L2 distance to best match
 
-        # Find the best match among existing explicit requirements
-        for old_req in existing_exp_reqs:
-            if old_req['source_type'] != SOURCE_TYPE_EXPLICIT:
-                continue
-
-            sim_score = _cosine_similarity(new_req['embedding'], old_req['embedding'])
-
-            if sim_score > max_sim_score:
-                max_sim_score = sim_score
-                best_match = old_req
+        # Check if Faiss returned a valid index (should always be < len if k <= N)
+        if best_match_index >= len(existing_exp_for_index):
+            # This should not happen if existing_exp_for_index is not empty, but for safety:
+            max_sim_score = -1.0
+            best_match = None
+        else:
+            best_match = existing_exp_for_index[best_match_index]
+            # Convert squared L2 distance to Cosine Similarity (cos_sim = 1 - (d^2 / 2))
+            max_sim_score = 1.0 - (sq_dist / 2.0)
 
         if max_sim_score >= REQ_UNCHANGED_SIM_THRESHOLD:
             new_req['change_analysis_status'] = CHANGE_STATUS_UNCHANGED
             new_req['change_analysis_status_reason'] = (
-                'Did not detect any major changes in updated requirements'
+                f'Did not detect any major changes in updated requirements. Similarity Score: {max_sim_score:.2f}'
             )
             new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
             new_req['testcase_status'] = best_match.get('testcase_status', '')
@@ -462,7 +515,7 @@ def _mark_new_reqs_change_status(
         elif max_sim_score >= REQ_MODIFIED_SIM_THRESHOLD:
             new_req['change_analysis_status'] = CHANGE_STATUS_MODIFIED
             new_req['change_analysis_status_reason'] = (
-                'Detected considerable modifications in updated requirements'
+                f'Detected considerable modifications in updated requirements. Similarity Score: {max_sim_score:.2f}'
             )
             new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
             new_req['testcase_status'] = 'NOT_STARTED'
@@ -471,7 +524,7 @@ def _mark_new_reqs_change_status(
         else:
             new_req['change_analysis_status'] = CHANGE_STATUS_NEW
             new_req['change_analysis_status_reason'] = (
-                'Detected only in new version requirements'
+                f'Detected only in new version requirements. Similarity Score: {max_sim_score:.2f}'
             )
             new_req['change_analysis_near_duplicate_id'] = None
             new_req['testcase_status'] = 'NOT_STARTED'
