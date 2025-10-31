@@ -598,7 +598,7 @@ def _mark_duplicates(
     '''
 
     # Stores (duplicate_id, near_duplicate_id, duplicate_source_ids_to_merge)
-    duplicates_to_update: List[Tuple[str, str, List[str]]] = []
+    duplicates_to_update: List[Tuple[str, str, List[str], List[Dict[str, Any]]]] = []
 
     perf_start = time.time()
 
@@ -710,9 +710,10 @@ def _mark_duplicates(
             # Store the IDs and the source IDs from the duplicate to be merged
             duplicates_to_update.append(
                 (
-                    duplicate_req['requirement_id'],
                     original_req['requirement_id'],
+                    duplicate_req['requirement_id'],
                     duplicate_req.get('parent_exp_req_ids', []),
+                    duplicate_req.get('regulations', []),
                 )
             )
 
@@ -737,34 +738,44 @@ def _mark_duplicates(
     batch = firestore_client.batch()
     batch_count = 0
 
-    for req_id, near_duplicate_id, parent_exp_req_ids in duplicates_to_update:
+    for (
+        original_id,
+        dupe_req_id,
+        dupe_parent_ids,
+        dupe_regulations,
+    ) in duplicates_to_update:
         if batch_count >= FIRESTORE_COMMIT_CHUNK:
             batch.commit()
             batch_count = 0
 
-        doc_ref = firestore_client.document(
-            'projects', project_id, 'versions', version, 'requirements', req_id
+        dupe_doc_ref = firestore_client.document(
+            'projects', project_id, 'versions', version, 'requirements', dupe_req_id
         )
 
         batch.update(
-            doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id}
+            dupe_doc_ref, {'duplicate': True, 'near_duplicate_id': original_id}
         )
         batch_count += 1
 
-        if parent_exp_req_ids:
+        if dupe_parent_ids or dupe_regulations:
             original_ref = firestore_client.document(
                 'projects',
                 project_id,
                 'versions',
                 version,
                 'requirements',
-                near_duplicate_id,
+                original_id,
             )
 
             batch.update(
                 original_ref,
-                {'parent_exp_req_ids': firestore.ArrayUnion(parent_exp_req_ids)},
+                {
+                    'parent_exp_req_ids': firestore.ArrayUnion(dupe_parent_ids),
+                    'regulations': firestore.ArrayUnion(dupe_regulations),
+                    'updated_at': firestore.SERVER_TIMESTAMP,
+                },
             )
+
             batch_count += 1
 
     if batch_count > 0:
@@ -773,7 +784,7 @@ def _mark_duplicates(
     perf_end = time.time()
 
     logger.info(
-        f'Time to find and update duplicates (in seconds): {perf_end - perf_start}'
+        f'Time taken to find and update duplicates (in seconds): {perf_end - perf_start}'
     )
 
     all_duplicates: List[Dict[str, Any]] = []
