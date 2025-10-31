@@ -556,15 +556,17 @@ def _mark_duplicates(
                 original_id,
             )
 
-            batch.update(
-                original_ref,
-                {
-                    'parent_exp_req_ids': firestore.ArrayUnion(dupe_parent_ids),
-                    'sources': firestore.ArrayUnion(dupe_sources),
-                    'updated_at': firestore.SERVER_TIMESTAMP,
-                },
-            )
+            updates = {
+                'updated_at': firestore.SERVER_TIMESTAMP,
+            }
 
+            if dupe_parent_ids:
+                updates['parent_exp_req_ids'] = firestore.ArrayUnion(dupe_parent_ids)
+
+            if dupe_sources:
+                updates['sources'] = firestore.ArrayUnion(dupe_sources)
+
+            batch.update(original_ref, updates)
             batch_count += 1
 
     if batch_count > 0:
