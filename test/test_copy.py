@@ -10,6 +10,13 @@ except Exception as e:
     print(f"Error initializing Firestore client: {e}")
     sys.exit(1)
 
+# --- Example Usage ---
+# NOTE: Replace these with your actual document paths and subcollection ID
+
+PREV_VERSION = "1"
+SOURCE_DOC_PATH = "projects/EUz0pMnqmNkBfh8FHMYZ/versions/1"
+SUBCOLLECTION_ID = "requirements"
+TARGET_DOC_PATH = "projects/EUz0pMnqmNkBfh8FHMYZ/versions/2"
 
 def process_document_data(version: str, doc_data: dict) -> dict:
     existing_history = []
@@ -91,15 +98,6 @@ def copy_subcollection_with_history(
         print(
             "Note: If the script fails due to permission errors, ensure your service account or ADC has 'Cloud Datastore User' or 'Cloud Firestore User' roles."
         )
-
-
-# --- Example Usage ---
-# NOTE: Replace these with your actual document paths and subcollection ID
-
-PREV_VERSION = "1"
-SOURCE_DOC_PATH = "projects/jETGtm44UTuqd4XNnA34/versions/1"
-SUBCOLLECTION_ID = "requirements"
-TARGET_DOC_PATH = "projects/jETGtm44UTuqd4XNnA34/versions/2"
 
 copy_subcollection_with_history(
     SOURCE_DOC_PATH, SUBCOLLECTION_ID, TARGET_DOC_PATH, PREV_VERSION, db
