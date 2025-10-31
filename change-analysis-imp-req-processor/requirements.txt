@@ -3,3 +3,5 @@ google-cloud-firestore==2.21.0
 google-cloud-discoveryengine==0.13.11
 google-genai==1.32.0
 protobuf<6
+faiss-cpu
+numpy

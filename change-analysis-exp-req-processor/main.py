@@ -76,9 +76,6 @@ GENAI_TIMEOUT_SECONDS = 90
 
 genai_client = genai.Client(http_options=HttpOptions(api_version=GENAI_API_VERSION))
 
-logger.getLogger('google.cloud').setLevel(logger.WARNING)
-logger.getLogger('google.genai').setLevel(logger.WARNING)
-
 
 # ===================== # Small utilities # =====================
 def _retry(max_attempts: int = 3, base_delay: float = 0.5):

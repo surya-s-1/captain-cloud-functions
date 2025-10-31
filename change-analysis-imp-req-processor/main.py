@@ -9,14 +9,32 @@ import concurrent.futures as futures
 from typing import Any, Dict, List, Tuple, TypeVar
 from urllib.parse import urlparse
 from google import genai
-from google.genai.types import HttpOptions, Part, Content, GenerateContentConfig
+from google.genai.types import (
+    HttpOptions,
+    Part,
+    Content,
+    GenerateContentConfig,
+    EmbedContentConfig,
+)
 from google.cloud import firestore, discoveryengine_v1
 from google.cloud.firestore_v1.transforms import Sentinel
+import numpy as np
+import faiss
 
 import functions_framework
 
 # from dotenv import load_dotenv
 # load_dotenv()
+
+
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
+ch = logging.StreamHandler()
+ch.setLevel(logging.DEBUG)
+formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+ch.setFormatter(formatter)
+logger.addHandler(ch)
+
 
 # ===================== # Environment variables # =====================
 # Required environment variables
@@ -29,6 +47,8 @@ DUPE_SIM_THRESHOLD = float(os.getenv('DUPE_SIM_THRESHOLD'))
 DISCOVERY_RELEVANCE_THRESHOLD = float(os.getenv('DISCOVERY_RELEVANCE_THRESHOLD'))
 FIRESTORE_COMMIT_CHUNK = int(os.getenv('FIRESTORE_COMMIT_CHUNK'))
 EMBEDDING_BATCH_SIZE = int(os.getenv('EMBEDDING_BATCH_SIZE'))
+EMBEDDING_OUTPUT_DIMENSION = int(os.getenv('EMBEDDING_OUTPUT_DIMENSION'))
+EMBEDDING_TIMEOUT_SECONDS = int(os.getenv('EMBEDDING_TIMEOUT_SECONDS'))
 MAX_PARALLEL_EMBEDDING_BATCHES = int(os.getenv('MAX_PARALLEL_EMBEDDING_BATCHES'))
 GENAI_MODEL = os.getenv('GENAI_MODEL')
 GENAI_API_VERSION = os.getenv('GENAI_API_VERSION')
@@ -76,9 +96,6 @@ serving_config = (
 )
 genai_client = genai.Client(http_options=HttpOptions(api_version=GENAI_API_VERSION))
 
-logging.getLogger('google.cloud').setLevel(logging.WARNING)
-logging.getLogger('google.genai').setLevel(logging.WARNING)
-
 # ===================== # Small utilities # =====================
 
 
@@ -93,7 +110,7 @@ def _retry(max_attempts: int = 3, base_delay: float = 0.5):
                 try:
                     return fn(*args, **kwargs)
                 except Exception as e:
-                    logging.warning(
+                    logger.warning(
                         f'Attempt {attempt}/{max_attempts} failed for {fn.__name__} with error: {e}'
                     )
                     if attempt == max_attempts:
@@ -111,7 +128,7 @@ def _update_version_status(project_id: str, version: str, status: str) -> None:
     '''Updates the status of a project version in Firestore.'''
     doc_ref = firestore_client.document('projects', project_id, 'versions', version)
     doc_ref.set({'status': status}, merge=True)
-    print(f'Status => {status}')
+    logger.info(f'Status => {status}')
 
 
 T = TypeVar('T')
@@ -153,53 +170,67 @@ def _get_document_size_approx(data: Dict[str, Any]) -> int:
         data_json = json.dumps(data, default=_firestore_json_converter)
         return len(data_json.encode('utf-8'))
     except Exception as e:
-        logging.warning(f'Failed to serialize document data for size check. Error: {e}')
+        logger.warning(f'Failed to serialize document data for size check. Error: {e}')
         return -1
 
 
 @_retry(max_attempts=3)
-def _firestore_commit_many(
-    doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
+def _commit_single_batch(
+    batch_doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
 ) -> None:
+    '''Commits a single batch of documents to Firestore.'''
+    if not batch_doc_tuples:
+        return
+
     batch = firestore_client.batch()
     batch_count = 0
     skipped_count = 0
 
-    logging.info(f'Starting commit for {len(doc_tuples)} total documents...')
-
-    for doc_ref, data in doc_tuples:
+    for doc_ref, data in batch_doc_tuples:
         data_size_bytes = _get_document_size_approx(data)
 
         if data_size_bytes == -1:
-            logging.error(f'SKIPPING: {doc_ref.path} due to error during size check.')
+            logger.info(f'SKIPPING: {doc_ref.path} due to error during size check.')
             skipped_count += 1
             continue
 
         if data_size_bytes > MAX_DOC_SIZE_BYTES:
-            logging.warning(
+            logger.info(
                 f'SKIPPING: {doc_ref.path}. '
                 f'Approximate size ({data_size_bytes / 1024:.2f} KiB) exceeds the '
                 f'conservative limit ({MAX_DOC_SIZE_BYTES / 1024:.2f} KiB).'
             )
+
             skipped_count += 1
             continue
 
         batch.set(doc_ref, data)
         batch_count += 1
 
-        if batch_count >= FIRESTORE_COMMIT_CHUNK:
-            logging.info(f'Firestore => committing {batch_count} documents...')
-            batch.commit()
-            batch = firestore_client.batch()
-            batch_count = 0
-
-    if batch_count:
-        logging.info(f'Firestore => committing final {batch_count} documents...')
+    if batch_count > 0:
         batch.commit()
+        logger.info(f'Firestore => committed {batch_count} documents in a batch.')
 
-    logging.warning(
-        f'Commit finished. Total documents skipped due to size/error: {skipped_count}'
-    )
+    if skipped_count > 0:
+        logger.info(f'Firestore => skipped {skipped_count} documents in a batch.')
+
+
+@_retry(max_attempts=3)
+def _firestore_commit_many(
+    doc_tuples: List[Tuple[firestore.DocumentReference, Dict[str, Any]]],
+) -> None:
+    '''Commits documents to Firestore in batches, using threading for parallelism.'''
+
+    logger.info(f'Starting commit for {len(doc_tuples)} total documents...')
+
+    chunked_doc_tuples = _chunk_list(doc_tuples, FIRESTORE_COMMIT_CHUNK)
+
+    logger.info(f'Total batches to commit => {len(chunked_doc_tuples)}')
+
+    with futures.ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        ex.map(_commit_single_batch, chunked_doc_tuples)
+
+    logger.info('Commit finished.')
 
 
 def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
@@ -220,26 +251,43 @@ def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
 
     original_length = len(texts)
 
+    logger.info(f'Generating embeddings for {len(texts)} texts...')
+
     try:
         contents = [Content(parts=[Part(text=t)]) for t in texts]
 
-        with futures.ThreadPoolExecutor(max_workers=1) as ex:
+        perf_start = time.time()
+
+        with futures.ThreadPoolExecutor() as ex:
             future = ex.submit(
                 lambda: genai_client.models.embed_content(
                     model=EMBEDDING_MODEL,
                     contents=contents,
+                    config=EmbedContentConfig(
+                        auto_truncate=True,
+                        output_dimensionality=EMBEDDING_OUTPUT_DIMENSION,
+                        task_type='SEMANTIC_SIMILARITY',
+                    ),
                 )
             )
-            response = future.result(timeout=GENAI_TIMEOUT_SECONDS)
+
+            response = future.result(timeout=EMBEDDING_TIMEOUT_SECONDS)
 
         batch_embeddings = [e.values for e in response.embeddings]
+
+        perf_end = time.time()
+
+        logger.info(
+            f'Time taken for this embedding batch (in seconds): {perf_end - perf_start}'
+        )
 
         return batch_embeddings
 
     except Exception as e:
-        logging.exception(
+        logger.exception(
             f'Batch embedding generation failed for {len(texts)} texts. Error: {e}'
         )
+
         return [[]] * original_length
 
 
@@ -280,7 +328,7 @@ def _refine_requirement_with_gemini(text: str) -> str:
         )
         return response.get('text', '')
     except Exception as e:
-        logging.error(
+        logger.error(
             f'Gemini refinement failed for text:\'{text[:50]}...\'. Error: {e}'
         )
         return text
@@ -291,7 +339,9 @@ def _refine_disc_results(
 ) -> List[Dict[str, Any]]:
     '''Runs Gemini refinement on a list of candidates in parallel.'''
 
-    print(f'Starting parallel refinement of {len(results)} candidates with Gemini...')
+    logger.info(
+        f'Starting parallel refinement of {len(results)} candidates with Gemini...'
+    )
 
     snippets_to_refine = [res.get('snippet', '') for res in results]
 
@@ -303,7 +353,7 @@ def _refine_disc_results(
     for candidate, refined_text in zip(results, refined_texts):
         candidate['refined_text'] = refined_text
 
-    print('Refinement complete.')
+    logger.info('Refinement complete.')
 
     return results
 
@@ -364,7 +414,7 @@ def _query_discovery_engine_single(query_text: str) -> List[Dict[str, Any]]:
 
     processed.sort(key=lambda x: x['relevance_score'], reverse=True)
 
-    print(f'Discovery processed => {len(processed)}')
+    logger.info(f'Discovery processed => {len(processed)}')
 
     return [
         el for el in processed if el['relevance_score'] > DISCOVERY_RELEVANCE_THRESHOLD
@@ -378,7 +428,7 @@ def _query_discovery_engine_wrapper(req_tuple: Tuple[str, str]) -> List[Dict[str
         f'Find the regulations and standards and procedures that apply to the following requirement: {req_text}'
     )
 
-    print(f'{req_id} => Discovery results => {len(discovery_results)}')
+    logger.info(f'{req_id} => Discovery results => {len(discovery_results)}')
 
     for res in discovery_results:
         res['explicit_requirement_id'] = req_id
@@ -400,7 +450,7 @@ def _query_discovery_engine_parallel(
         for res_list in ex.map(_query_discovery_engine_wrapper, req_inputs):
             all_results.extend(res_list)
 
-    print(f'Discovery implicit candidates => {len(all_results)}')
+    logger.info(f'Discovery implicit candidates => {len(all_results)}')
 
     return all_results
 
@@ -464,7 +514,7 @@ def _write_reqs_to_firestore(
 ) -> List[Dict[str, Any]]:
     '''Persists new implicit requirements to Firestore.'''
 
-    print(f'Persisting {len(requirements)} implicit requirements to firestore...')
+    logger.info(f'Persisting {len(requirements)} implicit requirements to firestore...')
 
     requirements_collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
@@ -498,111 +548,228 @@ def _write_reqs_to_firestore(
 
     if doc_insertions_tuples_list:
 
-        print(f'Committing {len(doc_insertions_tuples_list)} INSERT/SET operations...')
+        logger.info(
+            f'Committing {len(doc_insertions_tuples_list)} INSERT/SET operations...'
+        )
 
         _firestore_commit_many(doc_insertions_tuples_list)
 
-    print(f'New Implicit writes (Discovery) => {len(written_reqs)}')
+    logger.info(f'New Implicit writes (Discovery) => {len(written_reqs)}')
 
     return written_reqs
 
 
 def _mark_duplicates(
-    project_id: str, version: str, newly_written_reqs: List[Dict[str, Any]]
+    project_id: str, version: str, requirements: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    '''Compares newly written requirement embeddings and marks duplicates in Firestore.'''
+    '''
+    Compares requirement embeddings and marks duplicates in Firestore using vector similarity.
+    Uses Faiss for O(N log N) or better performance.
+    Returns (duplicates, originals)
+    '''
 
-    duplicates_to_update: List[Tuple[str, str, List[str]]] = []
+    # Stores (duplicate_id, near_duplicate_id, duplicate_source_ids_to_merge)
+    duplicates_to_update: List[Tuple[str, str, List[str], List[Dict[str, Any]]]] = []
 
-    existing_query = (
-        firestore_client.collection(
-            'projects', project_id, 'versions', version, 'requirements'
-        )
-        .where('source_type', '==', SOURCE_TYPE_IMPLICIT)
-        .where('duplicate', '==', False)
-        .where('deleted', '==', False)
-        .where('change_analysis_status', '!=', CHANGE_STATUS_IGNORED)
+    perf_start = time.time()
+
+    # 1. Prepare Data and Build Index
+    if not requirements:
+        return [], []
+
+    # Filter out requirements that are already duplicates and prepare data
+    original_requirements = [
+        req for req in requirements if not req.get('duplicate', False)
+    ]
+
+    if len(original_requirements) < 2:
+        # Cannot have duplicates if there's 0 or 1 item
+        return [], requirements
+
+    # Extract embeddings and map index back to original requirement_id
+    embeddings = np.array(
+        [req['embedding'] for req in original_requirements], dtype='float32'
     )
 
-    existing_originals = [doc.to_dict() for doc in existing_query.stream()]
+    req_ids = [req['requirement_id'] for req in original_requirements]
 
-    all_reqs_for_dedupe = existing_originals + newly_written_reqs
+    dimension = embeddings.shape[1]
 
-    for i in range(len(newly_written_reqs)):
-        req_i = newly_written_reqs[i]  # New implicit req
-        if req_i.get('duplicate', False):
+    # L2-normalize the embeddings (necessary for using L2 distance as cosine similarity)
+    faiss.normalize_L2(embeddings)
+
+    # Create the index (FlatIndex uses exact search, a good starting point)
+    # For massive scale, you'd use IndexHNSWFlat or IndexIVFFlat for true ANN speedup
+    index = faiss.IndexFlatL2(dimension)
+    index.add(embeddings)
+
+    # 2. Perform Nearest Neighbors Search (All-vs-All in one go)
+    # k=2 because the nearest neighbor to a vector is always itself (distance 0).
+    # We want the *second* nearest neighbor (if it exists).
+    k = 2
+
+    # D is Distances (Squared L2), I is Indices
+    D, I = index.search(embeddings, k)
+
+    # Set to keep track of already marked duplicates by their index in the 'original_requirements' list
+    marked_indices = set()
+
+    # 3. Process Results
+    # Iterate over the results of the nearest neighbor search
+    for i in range(len(original_requirements)):
+        # Skip if this requirement has already been marked as a duplicate
+        if i in marked_indices:
             continue
 
-        best_match_id = None
-        max_sim_score = -1.0
+        # The first index I[i, 0] is always 'i' itself (nearest neighbor)
+        # The second index I[i, 1] is the near_duplicate_index
+        near_duplicate_index = I[i, 1]
 
-        # Compare against existing originals and other new items
-        for req_j in all_reqs_for_dedupe:
-            if req_i['requirement_id'] == req_j['requirement_id']:
-                continue
-            if req_j.get('duplicate', False):
-                continue
+        # The squared L2 distance D[i, 1] is between req_i and req_j (its nearest neighbor)
+        sq_dist = D[i, 1]
 
-            similarity = _cosine_similarity(req_i['embedding'], req_j['embedding'])
+        # Squared L2 distance (d^2) and Cosine Similarity (cos_sim) are related for
+        # L2-normalized vectors (where ||v||=1):
+        # d^2 = 2 * (1 - cos_sim) => cos_sim = 1 - (d^2 / 2)
+        # A squared L2 distance of 0.0 corresponds to a cos_sim of 1.0.
+        # Threshold: 1 - (DUPE_SIM_THRESHOLD) * 2
+        # Example: If DUPE_SIM_THRESHOLD is 0.95, max_sq_dist is 2 * (1 - 0.95) = 0.1
+        MAX_SQ_DIST = 2 * (1 - DUPE_SIM_THRESHOLD)
 
-            if similarity >= DUPE_SIM_THRESHOLD and similarity > max_sim_score:
-                max_sim_score = similarity
-                best_match_id = req_j['requirement_id']
+        # Check if the near neighbor is close enough and is not the vector itself
+        # Note: I[i, 1] < len(original_requirements) check is for safety,
+        # Faiss returns max index if k > N.
+        if near_duplicate_index < len(original_requirements) and sq_dist <= MAX_SQ_DIST:
 
-        if best_match_id:
-            # req_i is a duplicate of best_match_id (which could be an old original or a new original)
-            duplicates_to_update.append(
+            # Found a match! The original one should be the one that appeared earlier (lower index i)
+            # The *duplicate* is the one being marked.
+
+            req_i = original_requirements[i]
+            req_j = original_requirements[near_duplicate_index]
+
+            # Determine which is the 'original' and which is the 'duplicate' based on
+            # their position in the *original list* of requirements passed to the function.
+            # We assume the one with the earlier index in the *original* list is the 'original'.
+
+            # Find the original index for sorting logic
+            original_i_index = next(
                 (
-                    req_i['requirement_id'],
-                    best_match_id,
-                    req_i.get('parent_exp_req_ids', []),
+                    idx
+                    for idx, req in enumerate(requirements)
+                    if req['requirement_id'] == req_i['requirement_id']
                 )
             )
-            req_i['duplicate'] = True
+            original_j_index = next(
+                (
+                    idx
+                    for idx, req in enumerate(requirements)
+                    if req['requirement_id'] == req_j['requirement_id']
+                )
+            )
+
+            if original_i_index < original_j_index:
+                # req_j is the duplicate of req_i (the earlier one)
+                duplicate_req = req_j
+                original_req = req_i
+                duplicate_idx = near_duplicate_index
+            else:
+                # req_i is the duplicate of req_j (the earlier one)
+                duplicate_req = req_i
+                original_req = req_j
+                duplicate_idx = i
+
+            # Store the IDs and the source IDs from the duplicate to be merged
+            duplicates_to_update.append(
+                (
+                    original_req['requirement_id'],
+                    duplicate_req['requirement_id'],
+                    duplicate_req.get('parent_exp_req_ids', []),
+                    duplicate_req.get('regulations', []),
+                )
+            )
+
+            # Mark the duplicate's index to prevent it from being processed as an original later
+            marked_indices.add(duplicate_idx)
+
+            # Mark locally to filter results later
+            duplicate_req['duplicate'] = True
+
+    perf_end_search = time.time()
+
+    logger.info(
+        f'Time to find duplicates with Faiss (in seconds): {perf_end_search - perf_start}'
+    )
 
     if not duplicates_to_update:
-        print('No implicit duplicates found using vector embeddings in this batch.')
-        return [], newly_written_reqs
+        logger.info('No duplicates found using vector embeddings in this batch.')
+        return [], requirements
 
-    print(f'Found {len(duplicates_to_update)} implicit duplicates to mark.')
+    logger.info(f'Found {len(duplicates_to_update)} duplicates to mark.')
+
     batch = firestore_client.batch()
+    batch_count = 0
 
-    for req_id, near_duplicate_id, parent_exp_req_ids in duplicates_to_update:
-        # Mark the new/duplicate requirement as duplicate
-        doc_ref = firestore_client.document(
-            'projects', project_id, 'versions', version, 'requirements', req_id
+    for (
+        original_id,
+        dupe_req_id,
+        dupe_parent_ids,
+        dupe_regulations,
+    ) in duplicates_to_update:
+        if batch_count >= FIRESTORE_COMMIT_CHUNK:
+            batch.commit()
+            batch_count = 0
+
+        dupe_doc_ref = firestore_client.document(
+            'projects', project_id, 'versions', version, 'requirements', dupe_req_id
         )
+
         batch.update(
-            doc_ref, {'duplicate': True, 'near_duplicate_id': near_duplicate_id}
+            dupe_doc_ref, {'duplicate': True, 'near_duplicate_id': original_id}
         )
+        batch_count += 1
 
-        # Merge the source explicit IDs into the original implicit document
-        if parent_exp_req_ids:
+        if dupe_parent_ids or dupe_regulations:
             original_ref = firestore_client.document(
                 'projects',
                 project_id,
                 'versions',
                 version,
                 'requirements',
-                near_duplicate_id,
-            )
-            batch.update(
-                original_ref,
-                {'parent_exp_req_ids': firestore.ArrayUnion(parent_exp_req_ids)},
+                original_id,
             )
 
-    batch.commit()
+            updates = {
+                'updated_at': firestore.SERVER_TIMESTAMP,
+            }
+
+            if dupe_parent_ids:
+                updates['parent_exp_req_ids'] = firestore.ArrayUnion(dupe_parent_ids)
+
+            if dupe_regulations:
+                updates['regulations'] = firestore.ArrayUnion(dupe_regulations)
+
+            batch.update(original_ref, updates)
+            batch_count += 1
+
+    if batch_count > 0:
+        batch.commit()
+
+    perf_end = time.time()
+
+    logger.info(
+        f'Time taken to find and update duplicates (in seconds): {perf_end - perf_start}'
+    )
 
     all_duplicates: List[Dict[str, Any]] = []
     all_originals: List[Dict[str, Any]] = []
 
-    for req in newly_written_reqs:
+    for req in requirements:
         if req.get('duplicate', False):
             all_duplicates.append(req)
         else:
             all_originals.append(req)
 
-    print(f'Vector Dedupe (Implicit Only) => Marked {len(all_duplicates)} duplicates.')
+    logger.info(f'Dedupe => Marked {len(all_duplicates)} explicit duplicates.')
 
     return all_duplicates, all_originals
 
@@ -629,7 +796,7 @@ def _get_current_explicit_statuses(project_id: str, version: str) -> Dict[str, s
 
 
 def update_existing_implicit_reqs(project_id: str, version: str) -> None:
-    print('Starting implicit requirement status link analysis...')
+    logger.info('Starting implicit requirement status link analysis...')
 
     collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
@@ -680,9 +847,9 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
             },
         )
 
-    print('Committing all batch updates...')
+    logger.info('Committing all batch updates...')
     batch.commit()
-    print('Batch committed successfully.')
+    logger.info('Batch committed successfully.')
 
     exp_status_map = _get_current_explicit_statuses(project_id, version)
 
@@ -748,7 +915,7 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
 
     _firestore_commit_many(updates)
 
-    print(f'Committed {len(updates)} implicit requirement status/link updates.')
+    logger.info(f'Committed {len(updates)} implicit requirement status/link updates.')
 
 
 # ===================== # Main HTTP Function for Implicit Processing # =====================
@@ -793,7 +960,7 @@ def process_implicit_requirements(request):
 
                 _update_version_status(project_id, version, 'START_IMPLICIT_DISCOVERY')
 
-                print(
+                logger.info(
                     'Starting implicit search for NEW/MODIFIED explicit requirements...'
                 )
 
@@ -837,7 +1004,7 @@ def process_implicit_requirements(request):
                 )
 
             except Exception as e:
-                logging.exception('Error during background implicit extraction:')
+                logger.exception('Error during background implicit extraction:')
 
                 _update_version_status(
                     project_id, version, 'ERR_CHANGE_ANALYSIS_IMPLICIT'
@@ -862,7 +1029,7 @@ def process_implicit_requirements(request):
         )
 
     except Exception as e:
-        logging.exception('Error initiating process:')
+        logger.exception('Error initiating process:')
 
         return (
             json.dumps(
