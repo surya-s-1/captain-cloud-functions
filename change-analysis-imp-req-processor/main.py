@@ -233,16 +233,6 @@ def _firestore_commit_many(
     logger.info('Commit finished.')
 
 
-def _cosine_similarity(v1: List[float], v2: List[float]) -> float:
-    '''Calculates the cosine similarity between two vectors.'''
-    dot_product = sum(a * b for a, b in zip(v1, v2))
-    magnitude_v1 = sum(a * a for a in v1) ** 0.5
-    magnitude_v2 = sum(b * b for b in v2) ** 0.5
-    if magnitude_v1 == 0 or magnitude_v2 == 0:
-        return 0.0
-    return dot_product / (magnitude_v1 * magnitude_v2)
-
-
 @_retry(max_attempts=3)
 def _generate_embedding_batch(texts: List[str]) -> List[List[float]]:
     '''Generates vector embeddings for a list of texts using a single batch API call.'''
