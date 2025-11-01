@@ -948,12 +948,12 @@ def process_implicit_requirements(request):
     project_id = None
     version = None
     try:
-        # payload = request.get_json(silent=True) or {}
+        payload = request.get_json(silent=True) or {}
         # Mock data
-        payload = {
-            'project_id': 'EUz0pMnqmNkBfh8FHMYZ',
-            'version': '2',
-        }
+        # payload = {
+        #     'project_id': 'EUz0pMnqmNkBfh8FHMYZ',
+        #     'version': '2',
+        # }
         project_id = payload.get('project_id')
         version = payload.get('version')
 
