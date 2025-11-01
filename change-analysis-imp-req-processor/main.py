@@ -305,19 +305,33 @@ def _refine_requirement_with_gemini(text: str) -> str:
     '''Refines a raw text snippet into a formal requirement using Gemini.'''
     if not text:
         return ''
+
     try:
+        perf_start = time.time()
+
         response = _genai_json_call(
             model=GENAI_MODEL,
             prompt=REFINEMENT_PROMPT.format(payload=text),
             schema={
-                'type': 'object',
-                'properties': {
-                    'text': {'type': 'string'},
+                'type': 'ARRAY',
+                'items': {
+                    'type': 'OBJECT',
+                    'properties': {
+                        'text': {'type': 'string'},
+                    },
+                    'required': ['text'],
                 },
-                'required': ['text'],
             },
         )
-        return response.get('text', '')
+
+        perf_end = time.time()
+
+        logger.info(
+            f'Time taken for this refinement (in seconds): {perf_end - perf_start}'
+        )
+
+        return " ".join([resp.get('text', '') for resp in response])
+
     except Exception as e:
         logger.error(
             f'Gemini refinement failed for text:\'{text[:50]}...\'. Error: {e}'
