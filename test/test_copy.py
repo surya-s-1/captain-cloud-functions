@@ -18,6 +18,7 @@ SOURCE_DOC_PATH = "projects/EUz0pMnqmNkBfh8FHMYZ/versions/1"
 SUBCOLLECTION_ID = "requirements"
 TARGET_DOC_PATH = "projects/EUz0pMnqmNkBfh8FHMYZ/versions/2"
 
+
 def process_document_data(version: str, doc_data: dict) -> dict:
     existing_history = []
     prev_history = doc_data.pop('history', [])
@@ -39,20 +40,18 @@ def process_document_data(version: str, doc_data: dict) -> dict:
 
 
 def copy_subcollection_with_history(
-    source_doc_path: str,
-    subcollection_id: str,
-    target_doc_path: str,
-    prev_version: str,
-    db: firestore.Client,
+    source_doc_path: str, subcollection_id: str, target_doc_path: str, prev_version: str
 ):
     print(f"\n--- Starting Copy Operation ---")
     print(f"Source: {source_doc_path}/{subcollection_id}")
     print(f"Target: {target_doc_path}/{subcollection_id}")
 
     try:
-        source_subcollection_ref = db.collection(
-            f'{source_doc_path}/{subcollection_id}'
+        source_subcollection_ref = (
+            db.collection(f'{source_doc_path}/{subcollection_id}')
+            # .where('source_type', '==', 'implicit')
         )
+
         target_subcollection_ref = db.collection(
             f'{target_doc_path}/{subcollection_id}'
         )
@@ -99,8 +98,9 @@ def copy_subcollection_with_history(
             "Note: If the script fails due to permission errors, ensure your service account or ADC has 'Cloud Datastore User' or 'Cloud Firestore User' roles."
         )
 
+
 copy_subcollection_with_history(
-    SOURCE_DOC_PATH, SUBCOLLECTION_ID, TARGET_DOC_PATH, PREV_VERSION, db
+    SOURCE_DOC_PATH, SUBCOLLECTION_ID, TARGET_DOC_PATH, PREV_VERSION
 )
 
 
