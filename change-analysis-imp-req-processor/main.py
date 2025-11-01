@@ -58,7 +58,7 @@ REFINEMENT_PROMPT_ENV = os.getenv('REFINEMENT_PROMPT')
 
 # ===================== # Constants # =====================
 
-REGULATIONS = ['FDA', 'IEC62304', 'ISO9001', 'ISO13485', 'ISO27001', 'SaMD']
+REGULATIONS = ['FDA', 'IEC 62304', 'ISO 9001', 'ISO 13485', 'ISO 27001', 'SaMD']
 MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 
