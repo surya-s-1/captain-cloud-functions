@@ -62,6 +62,7 @@ REGULATIONS = ['FDA', 'IEC62304', 'ISO9001', 'ISO13485', 'ISO27001', 'SaMD']
 MAX_WORKERS = 16
 MAX_DOC_SIZE_BYTES = 1048576 * 0.95
 
+SOURCE_TYPE_EXPLICIT = 'explicit'
 SOURCE_TYPE_IMPLICIT = 'implicit'
 
 CHANGE_STATUS_NEW = 'NEW'
@@ -204,7 +205,7 @@ def _commit_single_batch(
             skipped_count += 1
             continue
 
-        batch.set(doc_ref, data)
+        batch.set(doc_ref, data, merge=True)
         batch_count += 1
 
     if batch_count > 0:
@@ -491,6 +492,9 @@ def _format_disc_results(
                 ],
                 'parent_exp_req_ids': [parent_req] if parent_req else [],
                 'testcase_status': 'NOT_STARTED',
+                'toolCreated': 'NOT_STARTED',
+                'toolIssueKey': '',
+                'toolIssueLink': '',
                 'updated_at': firestore.SERVER_TIMESTAMP,
                 'created_at': firestore.SERVER_TIMESTAMP,
             }
@@ -765,89 +769,96 @@ def _mark_duplicates(
     return all_duplicates, all_originals
 
 
-def _get_current_explicit_statuses(project_id: str, version: str) -> Dict[str, str]:
+def _get_unchanged_explicit_req_ids(project_id: str, version: str) -> Dict[str, str]:
     '''Retrieves the current change_analysis_status for all active explicit requirements.'''
-    exp_status_map = {}
     exp_reqs_query = (
         firestore_client.collection(
             'projects', project_id, 'versions', version, 'requirements'
         )
-        .where('source_type', '==', 'explicit')
+        .where('source_type', '==', SOURCE_TYPE_EXPLICIT)
         .where('deleted', '==', False)
         .where('duplicate', '==', False)
+        .where('change_analysis_status', '==', CHANGE_STATUS_UNCHANGED)
         .select(['change_analysis_status'])
     )
 
-    for doc in exp_reqs_query.stream():
-        data = doc.to_dict()
-        exp_status_map[doc.id] = data.get(
-            'change_analysis_status', CHANGE_STATUS_UNCHANGED
-        )
-    return exp_status_map
+    exp_req_ids_set = {doc.id for doc in exp_reqs_query.stream()}
+
+    return exp_req_ids_set
 
 
 def update_existing_implicit_reqs(project_id: str, version: str) -> None:
     logger.info('Starting implicit requirement status link analysis...')
 
-    collection_ref = firestore_client.collection(
-        'projects', project_id, 'versions', version, 'requirements'
-    ).where('source_type', '==', SOURCE_TYPE_IMPLICIT)
+    collection_ref = (
+        firestore_client.collection(
+            'projects', project_id, 'versions', version, 'requirements'
+        )
+        .where('source_type', '==', SOURCE_TYPE_IMPLICIT)
+        .select(['requirement_id', 'change_analysis_status', 'deleted', 'duplicate'])
+    )
 
-    batch = firestore_client.batch()
+    ignored_updates = []
 
     deleted_query = collection_ref.where('deleted', '==', True)
     for doc in deleted_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status': CHANGE_STATUS_IGNORED,
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DELETED,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DELETED,
+                },
+            )
         )
 
     duplicate_query = collection_ref.where('duplicate', '==', True)
     for doc in duplicate_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status': CHANGE_STATUS_IGNORED,
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DUPLICATE,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DUPLICATE,
+                },
+            )
         )
 
     deprecated_query = collection_ref.where(
         'change_analysis_status', '==', CHANGE_STATUS_DEPRECATED
     )
     for doc in deprecated_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status': CHANGE_STATUS_IGNORED,
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DEPRECATED,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DEPRECATED,
+                },
+            )
         )
 
     ignored_query = collection_ref.where(
         'change_analysis_status', '==', CHANGE_STATUS_IGNORED
     )
     for doc in ignored_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_IGNORED,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_IGNORED,
+                },
+            )
         )
 
-    logger.info('Committing all batch updates...')
-    batch.commit()
-    logger.info('Batch committed successfully.')
+    _firestore_commit_many(ignored_updates)
 
-    exp_status_map = _get_current_explicit_statuses(project_id, version)
+    logger.info('Ignored requirements committed successfully.')
 
-    # Set of explicit IDs that are UNCHANGED
-    unchanged_exp_ids = {
-        k for k, v in exp_status_map.items() if v == CHANGE_STATUS_UNCHANGED
-    }
+    unchanged_exp_ids = _get_unchanged_explicit_req_ids(project_id, version)
+
+    logger.info(f'Unchanged explicit requirements: {unchanged_exp_ids}')
 
     # Query only active, non-duplicate implicit requirements
     imp_reqs_query = (
@@ -861,18 +872,17 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
         .select(['requirement_id', 'parent_exp_req_ids'])
     )
 
-    updates = []  # (doc_ref, data)
+    unchanged_updates = []  # (doc_ref, data)
 
     for doc in imp_reqs_query.stream():
         imp_data = doc.to_dict()
         imp_req_id = imp_data['requirement_id']
         parent_exp_req_ids = set(imp_data.get('parent_exp_req_ids', []))
 
-        # Explicit IDs that currently exist and are linked
-        valid_linked_exp_ids = parent_exp_req_ids.intersection(exp_status_map.keys())
-
         # Explicit IDs that are linked and are UNCHANGED
-        unchanged_links = valid_linked_exp_ids.intersection(unchanged_exp_ids)
+        unchanged_links = parent_exp_req_ids.intersection(unchanged_exp_ids)
+
+        logger.info(f'{imp_req_id} - Unchanged links => {unchanged_links}')
 
         new_status = ''
         new_status_reason = ''
@@ -902,11 +912,13 @@ def update_existing_implicit_reqs(project_id: str, version: str) -> None:
             doc_ref = firestore_client.document(
                 'projects', project_id, 'versions', version, 'requirements', imp_req_id
             )
-            updates.append((doc_ref, updated_data))
+            unchanged_updates.append((doc_ref, updated_data))
 
-    _firestore_commit_many(updates)
+    _firestore_commit_many(unchanged_updates)
 
-    logger.info(f'Committed {len(updates)} implicit requirement status/link updates.')
+    logger.info(
+        f'Committed {len(unchanged_updates)} implicit requirement status/link updates.'
+    )
 
 
 # ===================== # Main HTTP Function for Implicit Processing # =====================
@@ -922,12 +934,12 @@ def process_implicit_requirements(request):
     project_id = None
     version = None
     try:
-        payload = request.get_json(silent=True) or {}
+        # payload = request.get_json(silent=True) or {}
         # Mock data
-        # payload = {
-        #     'project_id': 'abc',
-        #     'version': 'v2',
-        # }
+        payload = {
+            'project_id': 'EUz0pMnqmNkBfh8FHMYZ',
+            'version': '2',
+        }
         project_id = payload.get('project_id')
         version = payload.get('version')
 
@@ -960,6 +972,7 @@ def process_implicit_requirements(request):
             )
             .where('source_type', '==', 'explicit')
             .where('deleted', '==', False)
+            .where('duplicate', '==', False)
             .where(
                 'change_analysis_status',
                 'in',
