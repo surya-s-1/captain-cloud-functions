@@ -92,12 +92,13 @@ def process_for_testcases(request):
                         firestore_client.collection(
                             'projects', project_id, 'versions', version, 'testcases'
                         )
+                        .where('deleted', '==', False)
                         .where('requirement_id', '==', r.get('requirement_id'))
                         .get()
                     )
 
                     for t in testcases_to_update:
-                        if count >= 450:
+                        if count >= 25:
                             batch.commit()
                             batch = firestore_client.batch()
                             count = 0
@@ -117,9 +118,9 @@ def process_for_testcases(request):
                             ),
                             {
                                 'title': (
-                                    f'[DEPRECATED] {title}'
-                                    if not title.startswith('[DEPRECATED]')
-                                    else title
+                                    title
+                                    if title.startswith('[DEPRECATED]')
+                                    else f'[DEPRECATED] {title}'
                                 ),
                                 'change_analysis_status': 'DEPRECATED',
                                 'change_analysis_status_reason': 'Its requirement was either MODIFIED/DEPRECATED/IGNORED',
@@ -135,12 +136,13 @@ def process_for_testcases(request):
                         firestore_client.collection(
                             'projects', project_id, 'versions', version, 'testcases'
                         )
+                        .where('deleted', '==', False)
                         .where('requirement_id', '==', r.get('requirement_id'))
                         .get()
                     )
 
                     for t in testcases_to_update:
-                        if count >= 450:
+                        if count >= 25:
                             batch.commit()
                             batch = firestore_client.batch()
                             count = 0
