@@ -199,7 +199,7 @@ def _commit_single_batch(
             skipped_count += 1
             continue
 
-        batch.set(doc_ref, data)
+        batch.set(doc_ref, data, merge=True)
         batch_count += 1
 
     if batch_count > 0:
@@ -350,58 +350,71 @@ def _load_existing_exp_requirements(
 ) -> List[Dict[str, Any]]:
     logger.info('Loading existing requirements from Firestore for change detection...')
 
-    collection_ref = firestore_client.collection(
-        'projects', project_id, 'versions', version, 'requirements'
-    ).where('source_type', '==', SOURCE_TYPE_EXPLICIT)
+    collection_ref = (
+        firestore_client.collection(
+            'projects', project_id, 'versions', version, 'requirements'
+        )
+        .where('source_type', '==', SOURCE_TYPE_EXPLICIT)
+        .select(['requirement_id', 'change_analysis_status', 'deleted', 'duplicate'])
+    )
 
-    batch = firestore_client.batch()
+    ignored_updates = []
 
     deleted_query = collection_ref.where('deleted', '==', True)
     for doc in deleted_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status': CHANGE_STATUS_IGNORED,
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DELETED,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DELETED,
+                },
+            )
         )
 
     duplicate_query = collection_ref.where('duplicate', '==', True)
     for doc in duplicate_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status': CHANGE_STATUS_IGNORED,
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DUPLICATE,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DUPLICATE,
+                },
+            )
         )
 
     deprecated_query = collection_ref.where(
         'change_analysis_status', '==', CHANGE_STATUS_DEPRECATED
     )
     for doc in deprecated_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status': CHANGE_STATUS_IGNORED,
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DEPRECATED,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_DEPRECATED,
+                },
+            )
         )
 
     ignored_query = collection_ref.where(
         'change_analysis_status', '==', CHANGE_STATUS_IGNORED
     )
     for doc in ignored_query.stream():
-        batch.update(
-            doc.reference,
-            {
-                'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_IGNORED,
-            },
+        ignored_updates.append(
+            (
+                doc.reference,
+                {
+                    'change_analysis_status': CHANGE_STATUS_IGNORED,
+                    'change_analysis_status_reason': CHANGE_STATUS_IGNORED_REASON_IGNORED,
+                },
+            )
         )
 
-    logger.info('Committing all batch updates...')
-    batch.commit()
-    logger.info('Batch committed successfully.')
+    _firestore_commit_many(ignored_updates)
+
+    logger.info('Ignored requirements committed successfully.')
 
     query = (
         firestore_client.collection(
@@ -510,6 +523,9 @@ def _mark_new_reqs_change_status(
             )
             new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
             new_req['testcase_status'] = best_match.get('testcase_status', '')
+            new_req['toolCreated'] = best_match.get('toolCreated', 'NOT_STARTED')
+            new_req['toolIssueKey'] = best_match.get('toolIssueKey', '')
+            new_req['toolIssueLink'] = best_match.get('toolIssueLink', '')
             old_ids_checked.add(best_match['requirement_id'])
 
         elif max_sim_score >= REQ_MODIFIED_SIM_THRESHOLD:
@@ -519,6 +535,9 @@ def _mark_new_reqs_change_status(
             )
             new_req['change_analysis_near_duplicate_id'] = best_match['requirement_id']
             new_req['testcase_status'] = 'NOT_STARTED'
+            new_req['toolCreated'] = best_match.get('toolCreated', 'NOT_STARTED')
+            new_req['toolIssueKey'] = best_match.get('toolIssueKey', '')
+            new_req['toolIssueLink'] = best_match.get('toolIssueLink', '')
             old_ids_checked.add(best_match['requirement_id'])
 
         else:
@@ -528,6 +547,9 @@ def _mark_new_reqs_change_status(
             )
             new_req['change_analysis_near_duplicate_id'] = None
             new_req['testcase_status'] = 'NOT_STARTED'
+            new_req['toolCreated'] = 'NOT_STARTED'
+            new_req['toolIssueKey'] = ''
+            new_req['toolIssueLink'] = ''
 
     logger.info(
         f'Statuses: UNCHANGED={len([r for r in new_exp_reqs if r['change_analysis_status'] == CHANGE_STATUS_UNCHANGED])},'
@@ -591,12 +613,12 @@ def _mark_unchanged_modified_new_in_firestore(
 
     logger.info(f'Persisting {len(requirements)} explicit requirements to firestore...')
 
-    requirements_collection_ref = firestore_client.collection(
+    collection_ref = firestore_client.collection(
         'projects', project_id, 'versions', version, 'requirements'
     )
 
-    doc_insertions_tuples_list = []
-    doc_updates_tuples_list = []
+    insertions_list = []
+    updates_list = []
     written_reqs = []
 
     for req in requirements:
@@ -618,8 +640,8 @@ def _mark_unchanged_modified_new_in_firestore(
                     'created_at': firestore.SERVER_TIMESTAMP,
                 }
 
-                doc_ref = requirements_collection_ref.document(req_id)
-                doc_insertions_tuples_list.append((doc_ref, doc_data))
+                doc_ref = collection_ref.document(req_id)
+                insertions_list.append((doc_ref, doc_data))
 
                 req['requirement_id'] = req_id
 
@@ -636,8 +658,8 @@ def _mark_unchanged_modified_new_in_firestore(
                     'updated_at': firestore.SERVER_TIMESTAMP,
                 }
 
-                doc_ref = requirements_collection_ref.document(req_id)
-                doc_updates_tuples_list.append((doc_ref, doc_data))
+                doc_ref = collection_ref.document(req_id)
+                updates_list.append((doc_ref, doc_data))
 
                 req['requirement_id'] = req_id
             else:
@@ -662,19 +684,13 @@ def _mark_unchanged_modified_new_in_firestore(
             }
         )
 
-    if doc_insertions_tuples_list:
-        logger.info(
-            f'Committing {len(doc_insertions_tuples_list)} INSERT/SET operations...'
-        )
-        _firestore_commit_many(doc_insertions_tuples_list)
+    if insertions_list:
+        logger.info(f'Committing {len(insertions_list)} INSERT/SET operations...')
+        _firestore_commit_many(insertions_list)
 
-    if doc_updates_tuples_list:
-        logger.info(f'Committing {len(doc_updates_tuples_list)} UPDATE operations...')
-        # Updates must use batch.update() which requires the document to exist.
-        batch = firestore_client.batch()
-        for doc_ref, data in doc_updates_tuples_list:
-            batch.update(doc_ref, data)
-        batch.commit()
+    if updates_list:
+        logger.info(f'Committing {len(updates_list)} UPDATE operations...')
+        _firestore_commit_many(updates_list)
 
     return written_reqs
 
